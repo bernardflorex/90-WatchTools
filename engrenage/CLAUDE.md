@@ -15,7 +15,7 @@ python evolvente.py [file.Cev] [--ni 150] [--plot]   # default file: test.Cev ->
 ```
 
 - Pure standard library (no numpy). `--plot` lazily imports matplotlib, which is not installed here and is untested.
-- There is no test suite, build system or git repo. To check a change to `evolve()`, compare with the Fortran output `Result/f.Egr`, which was generated from `Files/f.Cev` with **NI=550**: `evolve(roue, 550)` must match it to about 1e-7.
+- There is no test suite or build system. The git remote is `https://github.com/bernardflorex/eng_cre.git`; `Fortran/` is in `.gitignore`. To check a change to `evolve()`, compare with the Fortran output `Result/f.Egr`, which was generated from `Files/f.Cev` with **NI=550**: `evolve(roue, 550)` must match it to about 1e-7.
 - The Fortran cannot be built or run here: it needs Windows and Intel Fortran (`ifort`, QuickWin graphics, `winapi_c.cpp`). `Fortran/*.Exe` and `libiomp5md.dll` are Windows binaries.
 - `.vscode/launch.json` points to a `main.py` that does not exist; it is stale.
 
