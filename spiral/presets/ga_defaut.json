@@ -1,0 +1,8 @@
+{
+  "pop_size": 60,
+  "n_gen": 40,
+  "seed": 42,
+  "sondage_n_echantillons": 40,
+  "fraction_locale_warmstart": 0.7,
+  "rayon_relatif_warmstart": 0.15
+}
