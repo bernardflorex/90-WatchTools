@@ -47,9 +47,10 @@ collet un choix de forme) -- cf. spiral_lab/courbes.py pour les sources.
 from dataclasses import dataclass, field
 import numpy as np
 from scipy.interpolate import PchipInterpolator
+from scipy.optimize import brentq
 
 from .modele import GeometrieSpiral
-from .courbes import construire_zone, condition_phillips
+from .courbes import construire_zone, construire_zone_s, condition_phillips
 
 
 def epaisseur_theorique(r_min: float, r_max: float, n_tours_reels: float, hauteur_h: float,
@@ -93,16 +94,77 @@ class ParametresSpiral:
     phillips_n_points: int = 4
     phillips_offsets: np.ndarray = field(default_factory=lambda: np.zeros(1))
 
+    # --- Terminaison extérieure à RAQUETTE (alternative à la courbe de Phillips) ---
+    # Quand raquette_active vaut True, la courbe de Phillips est remplacée par
+    # une courbe en S suivie d'un ARC CONCENTRIQUE au rayon r_max. L'arc est ce
+    # qu'exige une raquette : ses goupilles y glissent en tournant autour de
+    # l'axe du balancier sans pousser le spiral radialement, de sorte que seule
+    # la LONGUEUR ACTIVE change. Sur une courbe de Phillips (ou une spirale
+    # d'Archimède), déplacer la raquette déformerait le spiral en plus d'en
+    # changer la longueur.
+    raquette_active: bool = False
+    raquette_plage_s_par_j: float = 60.0        # ± cette valeur autour du nominal
+    raquette_transition_angle_deg: float = 120.0
+    raquette_n_points: int = 4                  # points de contrôle de la courbe en S
+    raquette_offsets: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    raquette_transition_n_pas: int = 150
+    raquette_n_pas_arc: int = 61
+    # Étendue angulaire de l'arc AU-DELÀ du parcours des goupilles, jusqu'au
+    # piton. Indépendante de la plage de réglage (diagnostic 2026-09-25) : le
+    # piton n'est PAS à l'extrémité du parcours des goupilles. C'est cette
+    # longueur morte qui permet à la lame de fléchir latéralement au droit des
+    # goupilles, donc de venir en contact avec l'une d'elles -- sans quoi la
+    # raquette n'aurait aucune autorité. Mesuré : l'excursion latérale varie
+    # comme le CARRÉ de cette longueur (124 -> 371 µm de longueur morte fait
+    # passer l'excursion de 0.9 à 7.6 µm sur ±340°).
+    raquette_piton_angle_deg: float = 30.0
+    raquette_piton_n_pas: int = 100
+    # Jeu LIBRE total entre les goupilles, épaisseur de lame déjà déduite : la
+    # lame peut donc s'écarter de ±jeu/2 avant de toucher. C'est ce que contrôle
+    # un horloger à la loupe.
+    raquette_jeu_um: float = 20.0
+
+    # --- Compensation thermique par oxydation ---
+    # L'épaisseur d'oxyde est RECALCULÉE pour chaque candidat : elle dépend du
+    # profil d'épaisseur, que l'optimiseur fait justement varier (la part de
+    # rigidité portée par l'oxyde passe de 48% sur une section de 20 µm à 22%
+    # sur une section de 50 µm). `oxyde_impose_um` > 0 fige au contraire
+    # l'épaisseur, pour étudier ce que donne une valeur que le procédé sait
+    # tenir.
+    oxydation_active: bool = False
+    oxyde_impose_um: float = 0.0
+
     # --- Profils libres (valeurs aux points de contrôle, PCHIP sur s/L in [0,1]) ---
     epaisseur_noeuds: np.ndarray = field(default_factory=lambda: np.full(20, 0.030))
     delta_r_noeuds: np.ndarray = field(default_factory=lambda: np.zeros(12))
 
     @property
     def n_elements(self) -> int:
-        return self.n_elements_corps + self.grossmann_n_pas + self.phillips_n_pas
+        n = self.n_elements_corps + self.grossmann_n_pas
+        if self.raquette_active:
+            return (n + self.raquette_transition_n_pas + (self.raquette_n_pas_arc | 1)
+                    + self.n_pas_piton)
+        return n + self.phillips_n_pas
+
+    @property
+    def n_pas_piton(self) -> int:
+        """Éléments du prolongement d'arc jusqu'au piton. Nul si l'angle l'est :
+        sinon on créerait des éléments de longueur nulle, qui font diverger la
+        souplesse intégrée (division par ds nul) sans rien représenter."""
+        if not self.raquette_active or self.raquette_piton_angle_deg <= 1e-9:
+            return 0
+        return self.raquette_piton_n_pas
+
+    @property
+    def angle_exterieur_deg(self) -> float:
+        """Étendue angulaire de la zone terminale extérieure, hors arc de
+        raquette (dont l'angle est DÉDUIT de la plage de réglage demandée,
+        pas choisi -- voir angle_arc_raquette)."""
+        return (self.raquette_transition_angle_deg if self.raquette_active
+                else self.phillips_angle_deg)
 
 
-def rayons_jonction(p: ParametresSpiral):
+def rayons_jonction(p: ParametresSpiral, theta_arc: float = 0.0):
     """Rayons de jonction corps<->Grossmann et corps<->Phillips sur la ligne
     de référence à pas constant, et le pas lui-même -- calcul partagé entre
     construire_geometrie et optimisation.construire_bornes, pour que les
@@ -116,34 +178,112 @@ def rayons_jonction(p: ParametresSpiral):
     theta_total = p.n_tours_reels * 2.0 * np.pi
     pas_theorique = (p.r_max - p.r_min) / (p.n_tours_fictifs * 2.0 * np.pi)
     theta_gross = np.radians(p.grossmann_angle_deg)
-    theta_phil = np.radians(p.phillips_angle_deg)
-    theta_corps = max(theta_total - theta_gross - theta_phil, 1e-6)
+    # n_tours_reels compte du collet au POINT DE COMPTAGE (piton sur un spiral
+    # libre, goupilles sur un spiral à raquette), et non jusqu'au bout de la
+    # matière. Seule la PREMIÈRE MOITIÉ du parcours des goupilles entre donc
+    # dans le budget angulaire ; la seconde moitié et l'arc qui mène au piton
+    # viennent en plus. C'est la convention horlogère : un nombre entier de
+    # tours place le point de comptage sur le même rayon que l'attache à la
+    # virole, ce qui aligne sur ce rayon l'axe de la force que le spiral
+    # exerce sur le pivot du balancier (vérifié : l'axe suit la position
+    # angulaire du point de comptage à 1-4° près).
+    theta_ext = np.radians(p.angle_exterieur_deg) + theta_arc / 2.0
+    theta_corps = max(theta_total - theta_gross - theta_ext, 1e-6)
     r_body_start = p.r_min + pas_theorique * theta_gross
     r_body_end = r_body_start + pas_theorique * theta_corps
     return pas_theorique, r_body_start, r_body_end
 
 
-def construire_geometrie(p: ParametresSpiral, return_diagnostics: bool = False):
-    """Construit la géométrie complète : squelette collet -> Grossmann ->
-    corps -> Phillips -> piton, puis applique épaisseur et écart radial
+def angle_arc_raquette(geom: GeometrieSpiral, p: ParametresSpiral) -> float:
+    """Étendue angulaire (rad) de l'arc concentrique donnant la plage de
+    réglage demandée, déduite de la géométrie fournie.
+
+    Déplacer la raquette le long de l'arc raccourcit ou rallonge la partie
+    ACTIVE du spiral. Pour une poutre en flexion, la raideur varie comme
+    l'inverse de la souplesse intégrée S = somme(ds / e³), donc :
+
+        marche (s/j) = 86400 · ½ · ΔS / S       avec  ΔS = L_arc / e_piton³
+
+    La plage totale vaut deux fois raquette_plage_s_par_j (réglage de part et
+    d'autre du nominal, point de comptage au MILIEU de l'arc), d'où :
+
+        L_arc = 4 · plage · S · e_piton³ / 86400        θ_arc = L_arc / r_max
+
+    La sensibilité varie comme 1/e³ à l'extrémité : un piton aminci rend la
+    raquette beaucoup plus sensible et raccourcit d'autant l'arc nécessaire.
+    C'est pourquoi l'angle est déduit de la géométrie réelle et non d'une
+    estimation à épaisseur uniforme."""
+    # Souplesse de la PARTIE ACTIVE : c'est elle qui fixe la fréquence, donc
+    # elle qui détermine de combien un déplacement des goupilles la change.
+    # Utiliser la souplesse totale surestimait la plage de la fraction que
+    # représente la longueur morte -- imperceptible tant que le piton était
+    # collé aux goupilles, mais 1.4% d'erreur dès qu'on l'en éloigne de 30°
+    # (diagnostic 2026-09-25). Exprimée en rigidité E·I et non en e³, pour
+    # rester valable sur une lame oxydée, dont la rigidité n'est plus
+    # proportionnelle au cube de l'épaisseur.
+    actif = geom.partie_active()
+    souplesse = actif.souplesse()
+    rigidite_piton = float(actif.rigidite_flexion()[-1])
+    L_arc_m = 4.0 * float(p.raquette_plage_s_par_j) * souplesse * rigidite_piton / 86400.0
+    return (L_arc_m * 1e3) / p.r_max
+
+
+def construire_geometrie(p: ParametresSpiral, return_diagnostics: bool = False,
+                          reglage_thermique=None):
+    """Construit la géométrie complète et applique épaisseur et écart radial
     libres. Retourne une GeometrieSpiral (et un dict de diagnostics si
-    demandé -- validité géométrique, monotonie des deux courbes, repère de
+    demandé -- validité géométrique, monotonie des courbes, repère de
     plausibilité Phillips -- à utiliser comme pénalité/contrainte côté
-    optimiseur plutôt que de planter)."""
+    optimiseur plutôt que de planter).
+
+    Deux terminaisons extérieures possibles :
+      - spiral LIBRE  : collet -> Grossmann -> corps -> Phillips -> piton ;
+      - spiral à RAQUETTE : collet -> Grossmann -> corps -> courbe en S ->
+        arc concentrique -> piton, le point de comptage (goupilles) étant au
+        milieu de l'arc.
+
+    En mode raquette la construction se fait en DEUX passes : l'angle de l'arc
+    dépend de la souplesse intégrée de la lame, qui dépend elle-même de la
+    géométrie. Une première passe sans arc donne cette souplesse, la seconde
+    construit la géométrie définitive. L'arc ne représentant que quelques
+    dixièmes de pour-cent de l'étendue angulaire, une seule itération suffit
+    largement ; le coût est négligeable devant le balayage elastica qui suit."""
+    if not p.raquette_active:
+        return _construire(p, 0.0, return_diagnostics, reglage_thermique)
+    geom_provisoire = _construire(p, 0.0, False, reglage_thermique)
+    theta_arc = angle_arc_raquette(geom_provisoire, p)
+    return _construire(p, theta_arc, return_diagnostics, reglage_thermique)
+
+
+def _construire(p: ParametresSpiral, theta_arc: float, return_diagnostics: bool,
+                 reglage_thermique=None):
     if len(p.grossmann_offsets) != p.grossmann_n_points - 3:
         raise ValueError(f"grossmann_n_points={p.grossmann_n_points} implique "
                           f"{p.grossmann_n_points - 3} offsets, reçu {len(p.grossmann_offsets)}")
-    if len(p.phillips_offsets) != p.phillips_n_points - 3:
+    if p.raquette_active:
+        if len(p.raquette_offsets) != p.raquette_n_points - 4:
+            raise ValueError(f"raquette_n_points={p.raquette_n_points} implique "
+                              f"{p.raquette_n_points - 4} offsets, reçu {len(p.raquette_offsets)}")
+    elif len(p.phillips_offsets) != p.phillips_n_points - 3:
         raise ValueError(f"phillips_n_points={p.phillips_n_points} implique "
                           f"{p.phillips_n_points - 3} offsets, reçu {len(p.phillips_offsets)}")
 
     theta_total = p.n_tours_reels * 2.0 * np.pi
     theta_gross = np.radians(p.grossmann_angle_deg)
-    theta_phil = np.radians(p.phillips_angle_deg)
-    theta_corps = theta_total - theta_gross - theta_phil
+    # n_tours_reels compte du collet au POINT DE COMPTAGE (piton sur un spiral
+    # libre, goupilles sur un spiral à raquette), et non jusqu'au bout de la
+    # matière. Seule la PREMIÈRE MOITIÉ du parcours des goupilles entre donc
+    # dans le budget angulaire ; la seconde moitié et l'arc qui mène au piton
+    # viennent en plus. C'est la convention horlogère : un nombre entier de
+    # tours place le point de comptage sur le même rayon que l'attache à la
+    # virole, ce qui aligne sur ce rayon l'axe de la force que le spiral
+    # exerce sur le pivot du balancier (vérifié : l'axe suit la position
+    # angulaire du point de comptage à 1-4° près).
+    theta_ext = np.radians(p.angle_exterieur_deg) + theta_arc / 2.0
+    theta_corps = theta_total - theta_gross - theta_ext
     geometrie_valide = theta_corps > 1e-6
 
-    pas_theorique, r_body_start, r_body_end = rayons_jonction(p)
+    pas_theorique, r_body_start, r_body_end = rayons_jonction(p, theta_arc)
     theta_corps = max(theta_corps, 1e-6)
 
     # --- Zone de Grossmann : ancree en u=1 (jonction corps), libre en u=0 (collet, r_min) ---
@@ -159,17 +299,63 @@ def construire_geometrie(p: ParametresSpiral, return_diagnostics: bool = False):
     theta_b_arr = theta_gross + np.linspace(0.0, theta_corps, p.n_elements_corps, endpoint=False)
     r_b = p.r_min + pas_theorique * theta_b_arr
 
-    # --- Zone de Phillips : ancree en u=0 (jonction corps), libre en u=1 (piton, r_max) ---
-    zone_ph = construire_zone(
-        p.phillips_n_points, r_ancre=r_body_end, pente_ancre_du=pas_theorique * theta_phil,
-        r_libre=p.r_max, offsets_libres=p.phillips_offsets, ancre_a_u1=False,
-    )
-    u_ph = np.linspace(0.0, 1.0, p.phillips_n_pas)
-    theta_ph_arr = theta_gross + theta_corps + u_ph * theta_phil
-    r_ph = zone_ph.r(u_ph)
+    # --- Zone terminale exterieure ---
+    theta_jonction = theta_gross + theta_corps
+    theta_trans = np.radians(p.angle_exterieur_deg)
+    if p.raquette_active:
+        # Courbe en S : ancree en pente AUX DEUX BOUTS (pas d'Archimede cote
+        # corps, pente NULLE cote arc), suivie de l'arc concentrique a r_max.
+        zone_ext = construire_zone_s(
+            p.raquette_n_points, r_debut=r_body_end,
+            pente_debut_du=pas_theorique * theta_trans,
+            r_fin=p.r_max, pente_fin_du=0.0, offsets_libres=p.raquette_offsets,
+        )
+        u_ext = np.linspace(0.0, 1.0, p.raquette_transition_n_pas, endpoint=False)
+        theta_ext_arr = theta_jonction + u_ext * theta_trans
+        r_ext = zone_ext.r(u_ext)
 
-    theta_final = np.concatenate([theta_g_arr, theta_b_arr, theta_ph_arr])
-    r_ref = np.concatenate([r_g, r_b, r_ph])
+        # Nombre d'éléments IMPAIR sur l'arc : le point de comptage tombe alors
+        # exactement au milieu, et la raquette dispose du même nombre de pas de
+        # part et d'autre. Avec un nombre pair, le parcours était dissymétrique
+        # d'un élément (mesuré : +30.5 / -29.5 s/j pour ±30 demandés).
+        n_arc = p.raquette_n_pas_arc | 1
+        theta_debut_arc = theta_jonction + theta_trans
+        theta_arc_arr = theta_debut_arc + np.linspace(0.0, theta_arc, n_arc)
+        r_arc = np.full_like(theta_arc_arr, p.r_max)
+
+        # Prolongement de l'arc jusqu'au piton, au-delà du parcours des
+        # goupilles. Même rayon r_max : c'est toujours le même arc concentrique.
+        n_pit = p.n_pas_piton
+        if n_pit > 0:
+            theta_piton = np.radians(p.raquette_piton_angle_deg)
+            theta_pit_arr = theta_debut_arc + theta_arc + np.linspace(
+                theta_piton / n_pit, theta_piton, n_pit)
+            theta_arc_arr = np.concatenate([theta_arc_arr, theta_pit_arr])
+            r_arc = np.concatenate([r_arc, np.full(n_pit, p.r_max)])
+
+        theta_final = np.concatenate([theta_g_arr, theta_b_arr, theta_ext_arr, theta_arc_arr])
+        r_ref = np.concatenate([r_g, r_b, r_ext, r_arc])
+
+        # Point de comptage (goupilles) au MILIEU du PARCOURS des goupilles --
+        # pas au milieu de l'arc entier, qui se prolonge au-delà jusqu'au piton.
+        i_arc_debut = len(theta_g_arr) + len(theta_b_arr) + len(theta_ext_arr)
+        i_comptage = i_arc_debut + n_arc // 2
+        n_actif = i_comptage + 1
+    else:
+        zone_ext = construire_zone(
+            p.phillips_n_points, r_ancre=r_body_end, pente_ancre_du=pas_theorique * theta_trans,
+            r_libre=p.r_max, offsets_libres=p.phillips_offsets, ancre_a_u1=False,
+        )
+        u_ext = np.linspace(0.0, 1.0, p.phillips_n_pas)
+        theta_ext_arr = theta_jonction + u_ext * theta_trans
+        r_ext = zone_ext.r(u_ext)
+
+        theta_final = np.concatenate([theta_g_arr, theta_b_arr, theta_ext_arr])
+        r_ref = np.concatenate([r_g, r_b, r_ext])
+        i_arc_debut = None
+        i_comptage = len(theta_final) - 1
+        n_actif = len(theta_final)
+    zone_ph = zone_ext
 
     # --- Ecart radial libre, PCHIP sur l'indice normalise (proxy de s/L avant deformation) ---
     u_idx = np.linspace(0.0, 1.0, len(theta_final))
@@ -191,15 +377,62 @@ def construire_geometrie(p: ParametresSpiral, return_diagnostics: bool = False):
     u_noeuds_e = np.linspace(0.0, 1.0, len(p.epaisseur_noeuds))
     epaisseur = PchipInterpolator(u_noeuds_e, p.epaisseur_noeuds)(s_norm)
 
-    # --- Mise a l'echelle analytique de l'epaisseur pour tomber pile sur freq_cible ---
+    # --- Mise a l'echelle de l'epaisseur pour tomber pile sur freq_cible ---
+    # Sur la partie ACTIVE seulement : au-dela du point de comptage, la lame est
+    # tenue entre les goupilles et le piton, elle ne participe pas au rappel.
     from .constantes import E_SILICIUM
-    souplesse_int = np.sum((ds * 1e-3) / np.clip(epaisseur * 1e-3, 1e-6, None) ** 3)
+    from .physique import frequence_propre, souplesse_integree
+
+    def _geom(profil, t_mm):
+        return GeometrieSpiral(x=x, y=y, epaisseur=profil, hauteur=p.hauteur_h,
+                                n_actif=n_actif, epaisseur_oxyde=t_mm)
+
+    souplesse_int = souplesse_integree(s_cum[:n_actif] * 1e-3,
+                                        np.clip(epaisseur[:n_actif] * 1e-3, 1e-9, None))
     couple = (E_SILICIUM * (p.hauteur_h * 1e-3)) / (12.0 * souplesse_int)
     freq_actuelle = (1.0 / (2.0 * np.pi)) * np.sqrt(couple / p.inertie_balancier)
     beta = (p.freq_cible / freq_actuelle) ** (2.0 / 3.0)
-    epaisseur = epaisseur * beta
+    t_oxyde_mm = 0.0
 
-    geom = GeometrieSpiral(x=x, y=y, epaisseur=epaisseur, hauteur=p.hauteur_h)
+    if p.oxydation_active:
+        # Épaisseur d'oxyde et mise à l'échelle sont COUPLÉES : l'oxyde change
+        # la rigidité (donc la fréquence, donc beta), et beta change
+        # l'épaisseur de lame (donc l'oxyde requis, qui dépend du rapport
+        # oxyde/silicium). Point fixe sur les deux -- il converge en deux ou
+        # trois tours, l'oxyde ne pesant que quelques pour-cent de la rigidité.
+        # La formule analytique beta = (f_cible/f)^(2/3) ne vaut plus ici : la
+        # rigidité d'un composite n'est pas proportionnelle au cube de
+        # l'épaisseur. On résout donc numériquement.
+        from .thermique import ReglageThermique, epaisseur_oxyde_optimale
+        reglage_th = reglage_thermique or ReglageThermique()
+        for _ in range(4):
+            # ORDRE IMPORTANT : l'épaisseur d'oxyde d'abord, la mise à
+            # l'échelle ensuite. beta est ainsi toujours résolu avec l'oxyde
+            # définitif, donc la fréquence tombe exactement sur la cible --
+            # l'ordre inverse laissait un résidu (et jusqu'à 1% d'écart quand
+            # l'épaisseur d'oxyde est imposée).
+            t_precedent = t_oxyde_mm
+            if p.oxyde_impose_um > 0.0:
+                t_oxyde_mm = p.oxyde_impose_um * 1e-3
+            else:
+                t_um = epaisseur_oxyde_optimale(_geom(epaisseur * beta, t_oxyde_mm),
+                                                 p.inertie_balancier, reglage_th)
+                t_oxyde_mm = t_um * 1e-3 if np.isfinite(t_um) else 0.0
+
+            def ecart_frequence(facteur):
+                return (frequence_propre(_geom(epaisseur * facteur, t_oxyde_mm),
+                                         p.inertie_balancier) - p.freq_cible)
+            try:
+                beta = float(brentq(ecart_frequence, 0.2 * beta, 5.0 * beta,
+                                    xtol=1e-12, rtol=8.9e-16))
+            except ValueError:
+                break
+            # Convergé dès que l'épaisseur d'oxyde ne bouge plus d'un nanomètre.
+            if p.oxyde_impose_um > 0.0 or abs(t_oxyde_mm - t_precedent) < 1e-6:
+                break
+
+    epaisseur = epaisseur * beta
+    geom = _geom(epaisseur, t_oxyde_mm)
 
     if not return_diagnostics:
         return geom
@@ -221,5 +454,14 @@ def construire_geometrie(p: ParametresSpiral, return_diagnostics: bool = False):
         "phillips_ratio_plausibilite": ratio_phillips,
         "freq_avant_scaling_hz": float(freq_actuelle),
         "beta_scaling": float(beta),
+        "raquette_active": bool(p.raquette_active),
+        "raquette_arc_deg": float(np.degrees(theta_arc)),
+        "raquette_arc_mm": float(theta_arc * p.r_max),
+        "i_comptage": int(i_comptage),
+        "n_actif": int(n_actif),
+        "longueur_morte_mm": float(s_cum[-1] - s_cum[n_actif - 1]),
+        "oxydation_active": bool(p.oxydation_active),
+        "epaisseur_oxyde_um": float(t_oxyde_mm * 1000.0),
+        "croissance_lame_um": float(2.0 * 0.56 * t_oxyde_mm * 1000.0),
     }
     return geom, diagnostics

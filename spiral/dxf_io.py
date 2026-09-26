@@ -304,14 +304,43 @@ def charger_dxf(chemin_dxf: str, n_elements: int = 2000, hauteur_h: float = 0.10
     return GeometrieSpiral(x=Xm, y=Ym, epaisseur=epaisseurs, hauteur=hauteur_h)
 
 
-def exporter_dxf(geom: GeometrieSpiral, chemin_dxf: str):
-    """Exporte les deux flancs (offset ±epaisseur/2) en LWPOLYLINE, pour la
-    fabrication DRIE et pour la boucle de validation (charger_dxf(exporter_dxf(...))
-    doit redonner la même physique à la précision du maillage près)."""
-    ext, inte = geom.contour_flancs()
+def exporter_dxf(geom: GeometrieSpiral, chemin_dxf: str, cote_gravure: bool = False):
+    """Exporte les deux flancs (offset ±epaisseur/2) en LWPOLYLINE.
+
+    cote_gravure=False (défaut) : la pièce FINIE, oxyde compris -- c'est la
+    géométrie dont la physique a été calculée, et celle qu'il faut réimporter
+    pour la boucle de validation (charger_dxf(exporter_dxf(...)) doit redonner
+    la même physique à la précision du maillage près).
+
+    cote_gravure=True : la cote de GRAVURE, avant oxydation -- c'est le masque
+    dont l'atelier a besoin. Sur une lame oxydée les deux diffèrent de
+    2 x 0.56 x épaisseur d'oxyde, soit typiquement 4 µm : confondre les deux
+    fichiers donnerait une lame trop épaisse d'autant, donc une fréquence et
+    un jeu entre spires faux. Le nom du calque porte la cote employée pour
+    qu'un fichier isolé reste identifiable."""
+    ext, inte = geom.contour_flancs(cote_gravure=cote_gravure)
+    suffixe = "gravure" if cote_gravure else "fini"
     doc = ezdxf.new(setup=False)
     doc.header["$INSUNITS"] = 4  # millimètres
     msp = doc.modelspace()
-    msp.add_lwpolyline(ext, format="xy", dxfattribs={"layer": "spiral_flanc_ext"})
-    msp.add_lwpolyline(inte, format="xy", dxfattribs={"layer": "spiral_flanc_int"})
+    msp.add_lwpolyline(ext, format="xy", dxfattribs={"layer": f"spiral_flanc_ext_{suffixe}"})
+    msp.add_lwpolyline(inte, format="xy", dxfattribs={"layer": f"spiral_flanc_int_{suffixe}"})
     doc.saveas(chemin_dxf)
+
+
+def exporter_dxf_paire(geom: GeometrieSpiral, chemin_dxf: str):
+    """Écrit les DEUX fichiers : la cote de gravure (suffixe `_gravure`) et la
+    pièce finie (suffixe `_fini`). Retourne les deux chemins.
+
+    Deux fichiers plutôt qu'un seul, parce que les deux servent à des choses
+    différentes et que se tromper coûte cher : le masque part à la gravure, la
+    pièce finie sert à vérifier et à mesurer. Quand il n'y a pas d'oxyde, les
+    deux sont identiques et un seul fichier est écrit."""
+    base = chemin_dxf[:-4] if chemin_dxf.lower().endswith(".dxf") else chemin_dxf
+    if geom.epaisseur_oxyde <= 0.0:
+        exporter_dxf(geom, base + ".dxf", cote_gravure=False)
+        return [base + ".dxf"]
+    chemins = [base + "_gravure.dxf", base + "_fini.dxf"]
+    exporter_dxf(geom, chemins[0], cote_gravure=True)
+    exporter_dxf(geom, chemins[1], cote_gravure=False)
+    return chemins

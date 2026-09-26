@@ -23,6 +23,8 @@ from dataclasses import asdict, dataclass, field
 import json
 import numpy as np
 
+from .echappement import ReglageEchappement
+
 
 def _sauvegarder(obj, chemin: str):
     with open(chemin, "w", encoding="utf-8") as f:
@@ -113,11 +115,13 @@ class HyperparametresGA:
         return _charger(HyperparametresGA, chemin)
 
 
-_CLES_ARRAYS_PARAMETRES = ("epaisseur_noeuds", "delta_r_noeuds", "grossmann_offsets", "phillips_offsets")
+_CLES_ARRAYS_PARAMETRES = ("epaisseur_noeuds", "delta_r_noeuds", "grossmann_offsets",
+                            "phillips_offsets", "raquette_offsets")
 
 
 def sauvegarder_configuration(chemin: str, spec: SpecMouvement, parametres,
-                               bornes: "BornesOptimisation", hyperparams: "HyperparametresGA"):
+                               bornes: "BornesOptimisation", hyperparams: "HyperparametresGA",
+                               reglage_echappement=None):
     """Sauvegarde EN UN SEUL FICHIER toute la configuration nécessaire pour
     reproduire exactement un spiral et la façon dont il a été réglé/optimisé :
     la spec du mouvement, le vecteur de conception complet (ParametresSpiral,
@@ -129,10 +133,14 @@ def sauvegarder_configuration(chemin: str, spec: SpecMouvement, parametres,
     importait un jour presets)."""
     p_dict = asdict(parametres)
     for cle in _CLES_ARRAYS_PARAMETRES:
-        p_dict[cle] = list(np.asarray(p_dict[cle], dtype=float))
+        if cle in p_dict:
+            p_dict[cle] = list(np.asarray(p_dict[cle], dtype=float))
+    if reglage_echappement is None:
+        reglage_echappement = ReglageEchappement()
     data = {
         "spec": asdict(spec), "parametres": p_dict,
         "bornes": asdict(bornes), "hyperparametres_ga": asdict(hyperparams),
+        "echappement": asdict(reglage_echappement),
     }
     with open(chemin, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
@@ -140,8 +148,10 @@ def sauvegarder_configuration(chemin: str, spec: SpecMouvement, parametres,
 
 def charger_configuration(chemin: str):
     """Inverse de sauvegarder_configuration. Retourne (spec, parametres,
-    bornes, hyperparams). Import local de ParametresSpiral pour la même
-    raison (éviter tout risque de cycle presets<->parametrage)."""
+    bornes, hyperparams, reglage_echappement). Import local de
+    ParametresSpiral pour la même raison (éviter tout risque de cycle
+    presets<->parametrage). Un fichier écrit avant l'introduction du réglage
+    d'échappement se recharge sans erreur, avec les valeurs par défaut."""
     from .parametrage import ParametresSpiral
 
     with open(chemin, "r", encoding="utf-8") as f:
@@ -150,8 +160,13 @@ def charger_configuration(chemin: str):
     spec = SpecMouvement(**data["spec"])
     p_dict = dict(data["parametres"])
     for cle in _CLES_ARRAYS_PARAMETRES:
-        p_dict[cle] = np.array(p_dict[cle], dtype=float)
+        # `if cle in` : un fichier écrit avant l'introduction de la terminaison
+        # à raquette n'a pas la clé, la dataclass reprend alors son défaut
+        # (spiral libre) au lieu de lever une KeyError.
+        if cle in p_dict:
+            p_dict[cle] = np.array(p_dict[cle], dtype=float)
     parametres = ParametresSpiral(**p_dict)
     bornes = BornesOptimisation(**data["bornes"])
     hyperparams = HyperparametresGA(**data["hyperparametres_ga"])
-    return spec, parametres, bornes, hyperparams
+    reglage_echappement = ReglageEchappement(**data.get("echappement", {}))
+    return spec, parametres, bornes, hyperparams, reglage_echappement

@@ -130,3 +130,53 @@ def condition_phillips(x_zone: np.ndarray, y_zone: np.ndarray, ds_zone: np.ndarr
     if d_attendue < 1e-9:
         return float("nan")
     return float(d_mesure / d_attendue)
+
+
+def construire_zone_s(n_points: int, r_debut: float, pente_debut_du: float,
+                       r_fin: float, pente_fin_du: float,
+                       offsets_libres: np.ndarray) -> ZoneRaccordement:
+    """Courbe de raccordement dont les DEUX extrémités sont ancrées en position
+    ET en pente -- par opposition à `construire_zone`, où l'extrémité libre n'a
+    que son rayon imposé.
+
+    C'est ce qu'exige la transition vers un arc concentrique de raquette : il
+    faut à la fois rejoindre la spirale d'Archimède avec sa pente (continuité
+    C1 côté corps) et arriver sur l'arc avec une pente NULLE (l'arc est à rayon
+    constant), sans quoi le spiral présenterait un coude à l'entrée de la zone
+    balayée par les goupilles.
+
+    Quatre conditions déterminent exactement une cubique : avec n_points=4 la
+    courbe est entièrement fixée (interpolation d'Hermite cubique), et il n'y a
+    aucune variable d'optimisation. Au-delà, les n_points-4 points de contrôle
+    intermédiaires redeviennent libres, sans toucher aux tangences.
+
+    La forme en S (inflexion) n'est pas imposée ici : elle apparaît d'elle-même
+    dès que la pente moyenne exigée -- (r_fin - r_debut) / étendue angulaire --
+    dépasse la pente d'entrée, ce qui est le cas courant (mesuré sur un calibre
+    de référence : 117 à 700 µm/rad exigés contre 25 µm/rad de pas d'Archimède,
+    selon l'angle de transition retenu).
+    """
+    n_libres = n_points - 4
+    if n_points < 4:
+        raise ValueError(f"n_points doit valoir au moins 4 (reçu {n_points})")
+    if n_libres != len(offsets_libres):
+        raise ValueError(
+            f"n_points={n_points} implique {n_libres} points libres, "
+            f"reçu {len(offsets_libres)} offsets."
+        )
+    degre = n_points - 1
+
+    p0 = r_debut
+    p1 = r_debut + pente_debut_du / degre
+    pn = r_fin
+    pn_1 = r_fin - pente_fin_du / degre
+
+    if n_libres > 0:
+        t = np.linspace(0.0, 1.0, n_libres + 2)[1:-1]
+        ref = p1 + t * (pn_1 - p1)
+        interieurs = list(ref + np.asarray(offsets_libres))
+    else:
+        interieurs = []
+
+    points = [p0, p1, *interieurs, pn_1, pn]
+    return ZoneRaccordement(points_controle=np.array(points, dtype=float), ancre_a_u1=False)

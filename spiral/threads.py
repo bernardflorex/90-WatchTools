@@ -16,7 +16,8 @@ class SondageThread(QThread):
     signal_termine = Signal(object)
 
     def __init__(self, base, bornes, amplitudes_analyse_deg,
-                 n_echantillons, seed, pas_balayage_deg, parent=None):
+                 n_echantillons, seed, pas_balayage_deg,
+                 reglage_echappement=None, reglage_thermique=None, parent=None):
         super().__init__(parent)
         self.base = base
         self.bornes = bornes
@@ -24,11 +25,15 @@ class SondageThread(QThread):
         self.n_echantillons = n_echantillons
         self.seed = seed
         self.pas_balayage_deg = pas_balayage_deg
+        self.reglage_echappement = reglage_echappement
+        self.reglage_thermique = reglage_thermique
 
     def run(self):
         resultats = sonder_faisabilite(
             self.base, self.bornes, self.amplitudes_analyse_deg,
             n_echantillons=self.n_echantillons, seed=self.seed, pas_balayage_deg=self.pas_balayage_deg,
+            reglage_echappement=self.reglage_echappement,
+            reglage_thermique=self.reglage_thermique,
         )
         self.signal_termine.emit(resultats)
 
@@ -54,7 +59,8 @@ class OptimisationThread(QThread):
     signal_termine = Signal(object)
 
     def __init__(self, base, bornes, hyperparams, jeu_min_requis,
-                 amplitudes_analyse_deg, x0=None, pas_balayage_deg=20.0, parent=None):
+                 amplitudes_analyse_deg, x0=None, pas_balayage_deg=20.0,
+                 reglage_echappement=None, reglage_thermique=None, parent=None):
         super().__init__(parent)
         self.base = base
         self.bornes = bornes
@@ -63,6 +69,8 @@ class OptimisationThread(QThread):
         self.amplitudes_analyse_deg = amplitudes_analyse_deg
         self.x0 = x0
         self.pas_balayage_deg = pas_balayage_deg
+        self.reglage_echappement = reglage_echappement
+        self.reglage_thermique = reglage_thermique
 
     def run(self):
         callback = _CallbackProgres(self.signal_progres)
@@ -71,6 +79,8 @@ class OptimisationThread(QThread):
             amplitudes_analyse_deg=self.amplitudes_analyse_deg,
             warm_start=True, x0=self.x0, callback=callback,
             pas_balayage_deg=self.pas_balayage_deg,
+            reglage_echappement=self.reglage_echappement,
+            reglage_thermique=self.reglage_thermique,
         )
         self.signal_termine.emit(res)
 
