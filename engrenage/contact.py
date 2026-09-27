@@ -62,6 +62,36 @@ def _angle(p, o):
     return np.arctan2(p[..., 1] - o[1], p[..., 0] - o[0])
 
 
+DEMI_COURBURE = 25  # demi-fenêtre (en points fins) du cercle ajusté pour la courbure locale
+
+
+def rayon_courbure(ligne, i, demi=DEMI_COURBURE):
+    """Rayon de courbure signé de la ligne brisée `ligne` en son point `i` : positif si le flanc
+    est convexe, négatif s'il est concave -- la convention de `flanc_arcs`, pour que la pression
+    de Hertz se calcule de la même façon avec des points et avec des arcs.
+
+    Cercle des moindres carrés (Kåsa) sur une fenêtre de +-`demi` points. Sur un flanc
+    échantillonné à partir d'une chaîne d'arcs, il redonne le rayon exact de l'arc à 5 chiffres
+    (vérifié sur les 12 arcs de `validation.json`, hors arcs trop courts pour la fenêtre).
+    """
+    p = np.asarray(ligne, dtype=float)[max(0, i - demi):i + demi + 1]
+    if len(p) < 5:
+        return math.nan
+    x, y = p[:, 0] - p[:, 0].mean(), p[:, 1] - p[:, 1].mean()
+    try:
+        d, e, f = np.linalg.lstsq(np.column_stack((x, y, np.ones_like(x))), x * x + y * y,
+                                  rcond=None)[0]
+    except np.linalg.LinAlgError:
+        return math.nan
+    r = math.sqrt(max(f + (d * d + e * e) / 4.0, 0.0))
+    if r < 1e-12:
+        return math.nan
+    j = len(p) // 2
+    tx, ty = p[-1] - p[0]  # sens de parcours
+    vx, vy = d / 2.0 - x[j], e / 2.0 - y[j]  # du point vers le centre du cercle
+    return -math.copysign(r, tx * vy - ty * vx)
+
+
 def _tangentes(p):
     """Tangentes unitaires aux sommets de la ligne p (différences centrales)."""
     t = np.gradient(p, axis=0)
@@ -141,6 +171,88 @@ def premier_contact(c1, c2, o2, sens=1):
     return meilleur, point, tangente
 
 
+def _balayage(a):
+    """Angle ramené dans ]-pi, pi]."""
+    return (a + math.pi) % (2 * math.pi) - math.pi
+
+
+def flanc_arcs(mobile, dos=False):
+    """Flanc menant d'un mobile défini par des arcs de cercle : dictionnaire de centres,
+    rayons, convexité, angle de départ et balayage de chaque arc, dans le repère de la roue.
+
+    Le flanc menant est l'image miroir (x -> -x) du profil. Un arc est convexe (matière
+    du côté du centre) quand son rayon signé est positif (`arcs.krbgs`). `dos` : le demi-profil
+    arrière (dent dissymétrique), traité de la même façon, pour le jeu.
+    """
+    pts = np.asarray(mobile.profil_dos() if dos else mobile.points, dtype=float)
+    pm, ra = mobile.arcs_dos() if dos else mobile.arcs()
+    miroir = np.array([-1.0, 1.0])
+    pts, pm = pts * miroir, pm * miroir
+    a0 = np.arctan2(pts[:-1, 1] - pm[:, 1], pts[:-1, 0] - pm[:, 0])
+    a1 = np.arctan2(pts[1:, 1] - pm[:, 1], pts[1:, 0] - pm[:, 0])
+    return {"centres": pm, "rayons": np.abs(ra), "convexe": ra > 0, "a0": a0,
+            "balayage": _balayage(a1 - a0)}
+
+
+def _flanc_place(fl, angle, centre):
+    """Le flanc tourné de `angle` autour de `centre` (repère du dessin)."""
+    return {**fl, "centres": rotation(fl["centres"], angle, centre), "a0": fl["a0"] + angle}
+
+
+def _dans_arc(theta, a0, balayage, tol=1e-9):
+    t = _balayage(theta - a0) * np.sign(balayage)
+    return (t >= -tol) & (t <= np.abs(balayage) + tol)
+
+
+def premier_contact_arcs(c1, c2, o2):
+    """Comme `premier_contact`, mais entre deux flancs faits d'arcs de cercle (KONTA/KONTW du
+    Fortran) : plus petite rotation d in [0, 2π[ de `c2` autour de `o2` (sens trigonométrique)
+    qui met un arc de `c2` en tangence avec un arc du flanc fixe `c1`.
+
+    Deux arcs sont tangents quand la distance de leurs centres vaut r1 + r2 (deux arcs
+    convexes) ou r_concave - r_convexe (un convexe dans un concave) ; deux arcs concaves ne se
+    touchent pas. Le centre de l'arc de `c2` décrit un cercle autour de `o2` : la distance
+    voulue donne d par la loi des cosinus. Le point de tangence, sur la ligne des centres,
+    doit se trouver sur les deux arcs. Retourne (d, point, tangente, (rayon 1, rayon 2)) ou
+    (None, None, None, None) ; les rayons de courbure au contact sont positifs pour un arc
+    convexe, négatifs pour un arc concave.
+    """
+    o2 = np.asarray(o2, dtype=float)
+    c1c, r1, v1 = c1["centres"], c1["rayons"][:, None], c1["convexe"][:, None]
+    c2c, r2, v2 = c2["centres"], c2["rayons"][None, :], c2["convexe"][None, :]
+    dt = np.where(v1 & v2, r1 + r2, np.where(v1 & ~v2, r2 - r1, np.where(~v1 & v2, r1 - r2, -1.0)))
+    w_vec = c1c - o2
+    w, aw = np.hypot(*w_vec.T)[:, None], np.arctan2(w_vec[:, 1], w_vec[:, 0])[:, None]
+    rho_vec = c2c - o2
+    rho, a02 = np.hypot(*rho_vec.T)[None, :], np.arctan2(rho_vec[:, 1], rho_vec[:, 0])[None, :]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        h = (rho**2 + w**2 - dt**2) / (2 * rho * w)
+    possible = (dt > 1e-12) & (np.abs(h) <= 1.0 + 1e-12)
+    ac = np.arccos(np.clip(np.where(possible, h, 0.0), -1.0, 1.0))
+    meilleur, resultat = math.inf, None
+    for signe in (1.0, -1.0):
+        d = (aw - a02 + signe * ac) % (2 * math.pi)
+        c2r = o2 + rho[..., None] * np.stack((np.cos(a02 + d), np.sin(a02 + d)), axis=-1)
+        u = (c2r - c1c[:, None, :]) / np.where(possible, dt, 1.0)[..., None]
+        s = np.where(v1 & ~v2, -1.0, 1.0)  # convexe dans concave : tangence du côté opposé
+        p = c1c[:, None, :] + (s * r1)[..., None] * u
+        th1 = np.arctan2(p[..., 1] - c1c[:, None, 1], p[..., 0] - c1c[:, None, 0])
+        th2 = np.arctan2(p[..., 1] - c2r[..., 1], p[..., 0] - c2r[..., 0]) - d  # avant rotation
+        ok = (possible & _dans_arc(th1, c1["a0"][:, None], c1["balayage"][:, None])
+              & _dans_arc(th2, c2["a0"][None, :], c2["balayage"][None, :]))
+        if ok.any():
+            dv = np.where(ok, d, np.inf)
+            i = np.unravel_index(np.argmin(dv), dv.shape)
+            if dv[i] < meilleur:
+                meilleur = dv[i]
+                rk1 = c1["rayons"][i[0]] * (1.0 if c1["convexe"][i[0]] else -1.0)
+                rk2 = c2["rayons"][i[1]] * (1.0 if c2["convexe"][i[1]] else -1.0)
+                resultat = (p[i], np.array([-u[i][1], u[i][0]]), (rk1, rk2))
+    if resultat is None:
+        return None, None, None, None
+    return meilleur, resultat[0], resultat[1], resultat[2]
+
+
 def _croix(a, b):
     return a[0] * b[1] - a[1] * b[0]
 
@@ -197,6 +309,9 @@ class Simulation:
     ideal_couple: float  # -Z2/Z1
     jeu_min: float = math.nan  # jeu de la menée sur la période (degrés)
     jeu_max: float = math.nan
+    hertz: np.ndarray = None  # (n,) pression de Hertz (N/mm²) pour un couple moteur de 1 mN.m
+    hertz_local: tuple = None  # ((x, y) sur la menante, (x, y) sur la menée) de la pression maximale
+    hertz_indice: int = -1  # position où elle est atteinte
 
     def __len__(self):
         return len(self.alpha1)
@@ -218,15 +333,36 @@ class Simulation:
             stats[nom] = (mn, float(v.mean()), mx, 200.0 * (mx - mn) / (mx + mn))
         return stats
 
+    def hertz_max(self):
+        """(pression maximale en N/mm², indice de position), ou (nan, -1) sans données de Hertz."""
+        if self.hertz is None or not np.isfinite(self.hertz).any():
+            return math.nan, -1
+        i = int(np.nanargmax(self.hertz))
+        return float(self.hertz[i]), i
+
+    def criteres(self):
+        """Les quatre critères d'optimisation : variation de couple (%, à minimiser), jeu maximal
+        (degrés, à minimiser), rendement moyen (%, à maximiser), pression de Hertz maximale
+        (N/mm² pour 1 mN.m, à minimiser)."""
+        st = self.statistiques()
+        return {"couple": st["couple"][3], "jeu": self.jeu_max, "rendement": st["rendement"][1],
+                "hertz": self.hertz_max()[0]}
+
     def position(self, i):
         c2 = None if np.isnan(self.contact2[i, 0]) else tuple(self.contact2[i])
         return Position(self.alpha1[i], self.alpha2[i], tuple(self.contact[i]), c2)
 
 
 class Engrenement:
-    def __init__(self, roues, profils, da=0.0, na=NA):
+    def __init__(self, roues, profils, da=0.0, na=NA, mobiles=None):
         """`da` : variation de l'entraxe par rapport à rt1 + rt2 (mm). Les cercles primitifs de
-        fonctionnement (rayons proportionnels aux nombres de dents) sont tangents en (0,0)."""
+        fonctionnement (rayons proportionnels aux nombres de dents) sont tangents en (0,0).
+
+        `mobiles` (arcs.Mobile, menant et mené) : les profils sont des arcs de cercle et le
+        contact est calculé analytiquement entre arcs (`premier_contact_arcs`), sans aucun
+        point de profil ; `profils` sert alors seulement au contrôle d'entraxe. Sinon les
+        profils sont des lignes brisées (points de evolvente.evolve), affinées par spline.
+        """
         self.roues = roues
         z1, z2 = roues[0].zz, roues[1].zz
         r1, r2 = roues[0].mo * z1 / 2.0, roues[1].mo * z2 / 2.0
@@ -236,13 +372,33 @@ class Engrenement:
         r1, r2 = r1 * cy, r2 * cy
         self.a1, self.a2 = 2 * math.pi / z1, 2 * math.pi / z2
         self.o1, self.o2 = np.array([0.0, -r1]), np.array([0.0, r2])
+        self.arcs = mobiles is not None
+        self._cache = {}
+        self._courbures = {}  # rayons de courbure signés au contact, par angle de menante (arcs)
+        # données de Hertz : celles des mobiles en mode arcs, celles des roues en mode points
+        # (les .Cev en ont un bloc, les .json une clé "hertz")
+        self.hertz = None
+        porteurs = mobiles if mobiles is not None else roues
+        if all(getattr(p, "e_mod", None) and p.poisson and p.epaisseur for p in porteurs):
+            self.hertz = [(p.e_mod, p.poisson, p.epaisseur) for p in porteurs]
+        if self.arcs:
+            self.tol, self.seuil_paire, self.seuil_contact2 = 1e-9, 0.0, 1e-3
+            self.fl1, fl2 = (flanc_arcs(m) for m in mobiles)
+            self.ref2 = _flanc_place(fl2, 0.0, self.o2)
+            # flancs arrière (jeu) : les mêmes si les dents sont symétriques
+            self.fb1, fb2 = (flanc_arcs(m, dos=True) for m in mobiles)
+            self.ref2b = _flanc_place(fb2, 0.0, self.o2)
+            self._cache_dos = {}
+            # flanc mené échantillonné, seulement pour vérifier les contacts trouvés
+            self.g2 = mobiles[1].echantillonner() * np.array([-1.0, 1.0])
+            return
+        self.tol, self.seuil_paire, self.seuil_contact2 = TOL, SEUIL_PAIRE, 2e-4
         # flancs menants (côté x<0), en résolution grossière puis fine
         gauche = [[(-x, y) for x, y in prof] for prof in profils]
         self.g1, self.g2 = (spline_naturelle(g, na) for g in gauche)
         self.f1, self.f2 = (spline_naturelle(g, NF) for g in gauche)
         self.ref2 = rotation(self.g2, 0.0, self.o2)
         self.ref2f = rotation(self.f2, 0.0, self.o2)
-        self._cache = {}
 
     @staticmethod
     def _tester_entraxe(profils, aa):
@@ -255,18 +411,27 @@ class Engrenement:
         if abs((aa * aa + tete[0] ** 2 - tete[1] ** 2) / (2 * aa * tete[0])) > 1:
             raise ErreurContact("entraxe trop grand (les cercles de tête ne se coupent plus)")
 
-    def psi(self, phi):
-        """(rotation de la menée, point, tangente) pour la dent de la menante d'axe phi."""
-        if phi not in self._cache:
-            self._cache[phi] = self._contact(phi)
-        return self._cache[phi]
+    def psi(self, phi, dos=False):
+        """(rotation de la menée, point, tangente) pour la dent de la menante d'axe phi ; `dos` :
+        avec les flancs arrière des dents (seulement en mode arcs)."""
+        cache = self._cache_dos if (dos and self.arcs) else self._cache
+        if phi not in cache:
+            cache[phi] = self._contact(phi, dos and self.arcs)
+        return cache[phi]
 
-    def _contact(self, phi):
+    def _contact(self, phi, dos=False):
+        if self.arcs:
+            fl1 = _flanc_place(self.fb1 if dos else self.fl1, phi, self.o1)
+            d, q, g, courbures = premier_contact_arcs(fl1, self.ref2b if dos else self.ref2, self.o2)
+            if not dos:
+                self._courbures[phi] = courbures
+            return (math.inf if d is None else d), q, g
         # recherche grossière, puis même recherche sur les seuls morceaux de flanc voisins
         # du contact, très finement échantillonnés : position et tangente du contact
         # bien plus précises qu'avec des cordes de 1e-3 (erreur en racine de la flèche)
         d0, q0, g0 = premier_contact(rotation(self.g1, phi, self.o1), self.ref2, self.o2, +1)
         if d0 is None:
+            self._courbures[phi] = (math.nan, math.nan)
             return math.inf, None, None
         f1 = rotation(self.f1, phi, self.o1)
         i1 = int(np.argmin(np.hypot(*(f1 - q0).T)))
@@ -274,15 +439,22 @@ class Engrenement:
         s1, s2 = slice(max(0, i1 - FEN), i1 + FEN + 1), slice(max(0, i2 - FEN), i2 + FEN + 1)
         d, q, g = premier_contact(f1[s1], self.ref2f[s2], self.o2, +1)
         if d is None or abs(d - d0) > 1e-3:  # contact réel hors de la zone affinée
-            return d0, q0, g0
+            d, q, g = d0, q0, g0
+        # courbures au contact, dans le repère propre de chaque roue (la courbure ne dépend pas
+        # de la rotation) : l'équivalent, sur des points, des rayons des arcs en contact
+        j1 = int(np.argmin(np.hypot(*(f1 - q).T)))
+        j2 = int(np.argmin(np.hypot(*(rotation(self.f2, d, self.o2) - q).T)))
+        self._courbures[phi] = (rayon_courbure(self.f1, j1), rayon_courbure(self.f2, j2))
         return d, q, g
 
-    def theta_max(self, phi):
-        """Position la plus haute de la menée quand la menante est en phi (contact flanc menant)."""
-        return min(self._c(phi, k) for k in (-1, 0, 1))
+    def theta_max(self, phi, dos=False):
+        """Position la plus haute de la menée quand la menante est en phi (contact flanc menant ;
+        `dos` : contact des flancs arrière, qui limite la course de la menée dans l'autre sens)."""
+        return min(self._c(phi, k, dos) for k in (-1, 0, 1))
 
     def jeu(self, debut, n=10):
-        """Jeu de la menée (degrés) sur une période : (min, max), comme AW(1) et AW(2).
+        """Jeu de la menée (degrés) sur une période : (min, max), comme AW(1) et AW(2), évalué
+        en `n` positions de la menante régulièrement réparties.
 
         Par symétrie par rapport à la ligne des centres, la position la plus basse de la menée
         avec la menante en phi est l'image de la plus haute avec la menante en -phi ; l'écart
@@ -291,13 +463,13 @@ class Engrenement:
         jeux = []
         for j in range(n):
             phi = debut + j * self.a1 / (n - 1)
-            somme = self.theta_max(phi) + self.theta_max(-phi)
+            somme = self.theta_max(phi) + self.theta_max(-phi, dos=True)
             jeux.append(math.degrees((somme + self.a2 / 2) % self.a2 - self.a2 / 2))
         return min(jeux), max(jeux)
 
-    def _c(self, phi, k):
+    def _c(self, phi, k, dos=False):
         """Position de la menée imposée par la paire k (dent k de la menante)."""
-        return self.psi(phi + k * self.a1)[0] + k * self.a2
+        return self.psi(phi + k * self.a1, dos)[0] + k * self.a2
 
     def debut(self):
         """Angle de la menante au début de menée, comme la recherche de FW dans Enganap.F90.
@@ -318,27 +490,27 @@ class Engrenement:
         # balayage croissant depuis -2 pas jusqu'à la première position où la paire 0 touche
         pas, n = self.a1 / 8, 8
         grille = [(k - 2 * n) * pas for k in range(2 * n + 1)]
-        if ecart(grille[0]) <= TOL:
+        if ecart(grille[0]) <= self.tol:
             raise ErreurContact("début de menée introuvable (paire 0 déjà en contact)")
         for lo, hi in zip(grille, grille[1:]):
-            if ecart(hi) <= TOL:
+            if ecart(hi) <= self.tol:
                 break
         else:
             raise ErreurContact("début de menée introuvable (pas de contact continu ?)")
         while hi - lo > 1e-7:
             m = (lo + hi) / 2
-            lo, hi = (m, hi) if ecart(m) > TOL else (lo, m)
+            lo, hi = (m, hi) if ecart(m) > self.tol else (lo, m)
 
         # les deux paires doivent vraiment se toucher (sinon rapport de conduite < 1)
         theta2 = min(self._c(hi, 0), self._c(hi, 1))
         limite = 5e-3 * self.roues[0].mo
         for k in (0, 1):
             q = self.psi(hi + k * self.a1)[1]
-            if _distance(q, rotation(self.g2, theta2 - k * self.a2, self.o2)) > limite:
+            if q is None or _distance(q, rotation(self.g2, theta2 - k * self.a2, self.o2)) > limite:
                 raise ErreurContact("deux paires de dents ne sont jamais en prise simultanément")
         return hi
 
-    def simuler(self, mu=0.2, n_pos=N_POS):
+    def simuler(self, mu=0.2, n_pos=N_POS, n_jeu=None):
         """`n_pos` positions de la menante, du début de menée à l'entrée de la paire suivante.
 
         Dans le recouvrement de deux paires on garde la paire 0 (ligne d'engrènement
@@ -350,6 +522,7 @@ class Engrenement:
         res = {k: np.full(n, np.nan) for k in ("a1", "a2", "rap", "cou", "ren", "nor", "paire")}
         contact, contact2 = np.full((n, 2), np.nan), np.full((n, 2), np.nan)
         sortie = False  # la paire 1 a quitté le contact, elle n'y reviendra pas
+        hertz = np.full(n, np.nan) if self.hertz else None
         for i in range(n):
             phi = debut + i * self.a1 / (n - 1)
             c0, q0, g0 = self.psi(phi)
@@ -358,18 +531,42 @@ class Engrenement:
                 d1, q1, g1 = self.psi(phi + self.a1)
                 c1 = d1 + self.a2
                 sortie = not math.isfinite(c1) or c1 > c0 + 1e-3
-            paire = 1 if (not sortie and c1 < c0 - SEUIL_PAIRE) else 0
+            paire = 1 if (not sortie and c1 < c0 - self.seuil_paire) else 0
             q, g = (q1, g1) if paire else (q0, g0)
             contact[i] = q
-            if not sortie and abs(c1 - c0) <= 2e-4:  # les deux paires se touchent
+            if not sortie and abs(c1 - c0) <= self.seuil_contact2:  # les deux paires se touchent
                 contact2[i] = q0 if paire else q1
             res["a1"][i], res["a2"][i], res["paire"][i] = phi, min(c0, c1), paire
             res["rap"][i], res["cou"][i], res["ren"][i], res["nor"][i] = efforts(self.o1, self.o2, q, g, mu)
+            if hertz is not None:
+                hertz[i] = self._hertz(res["nor"][i], self._courbures[phi + paire * self.a1])
         z1, z2 = self.roues[0].zz, self.roues[1].zz
-        jeu_min, jeu_max = self.jeu(debut)
-        return Simulation(mu, res["a1"], res["a2"], contact, contact2, res["paire"],
-                          res["rap"], res["cou"], res["ren"], res["nor"], -z1 / z2, -z2 / z1,
-                          jeu_min, jeu_max)
+        # jeu : toutes les positions avec des arcs (moteur rapide), 10 avec des points
+        jeu_min, jeu_max = self.jeu(debut, n_jeu or (n if self.arcs else 10))
+        sim = Simulation(mu, res["a1"], res["a2"], contact, contact2, res["paire"],
+                         res["rap"], res["cou"], res["ren"], res["nor"], -z1 / z2, -z2 / z1,
+                         jeu_min, jeu_max, hertz)
+        _, i = sim.hertz_max()
+        if i >= 0:  # où se trouve la pression maximale sur chacun des deux profils
+            k = int(res["paire"][i])
+            local1 = rotation([contact[i] - self.o1], -(res["a1"][i] + k * self.a1))[0]
+            local2 = rotation([contact[i] - self.o2], -(res["a2"][i] - k * self.a2))[0]
+            sim.hertz_local, sim.hertz_indice = (tuple(local1), tuple(local2)), i
+        return sim
+
+    def _hertz(self, force, rayons):
+        """Pression de Hertz maximale (N/mm²) d'un contact linéaire, pour la force normale `force`
+        (N) : sqrt(F * E* / (pi * H * (1 - nu^2) * R)), avec E* = E1*E2/(E1+E2), nu moyen, H la
+        plus petite épaisseur, R = |R1*R2/(R1+R2)| (rayons signés : concave négatif), comme
+        ENGANAC (KW(17))."""
+        (e1, n1, h1), (e2, n2, h2) = self.hertz
+        somme = rayons[0] + rayons[1]
+        if not math.isfinite(force) or abs(somme) < 1e-12:
+            return math.nan
+        r = abs(rayons[0] * rayons[1] / somme)
+        e = e1 * e2 / (e1 + e2)
+        nu = (n1 + n2) / 2.0
+        return math.sqrt(force * e / (math.pi * min(h1, h2) * (1.0 - nu * nu) * r))
 
 
 def _distance(p, ligne):
