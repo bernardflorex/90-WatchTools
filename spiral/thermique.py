@@ -78,7 +78,8 @@ class ReglageThermique:
     cte_oxyde: float = cst.CTE_OXYDE
 
 
-def rigidite_composite(e_m, h_m, t_m, temperature: float, reglage: ReglageThermique):
+def rigidite_composite(e_m, h_m, t_m, temperature: float, reglage: ReglageThermique,
+                        module_silicium=None):
     """Rigidité de flexion E·I (N.m²) dans le plan du spiral, d'une lame de
     silicium de section e_m x h_m oxydée sur ses quatre faces d'une épaisseur
     d'oxyde t_m, à la température donnée.
@@ -89,6 +90,13 @@ def rigidite_composite(e_m, h_m, t_m, temperature: float, reglage: ReglageThermi
 
     e_m est l'épaisseur du silicium AVANT oxydation (la cote de gravure) :
     l'oxydation consomme ensuite 0.44·t de chaque côté et déborde de 0.56·t.
+
+    module_silicium : module de Young du silicium à la température de
+    référence, scalaire ou tableau par élément. Il est fourni par la géométrie
+    quand le wafer est anisotrope, le module dépendant alors de la direction
+    locale de la lame. Par défaut, celui du réglage (plan isotrope). La
+    dépendance en température, elle, est la même quelle que soit la direction :
+    c'est un coefficient relatif.
     """
     dT = float(temperature) - reglage.temperature_reference
     dil_si = 1.0 + reglage.cte_silicium * dT
@@ -103,14 +111,15 @@ def rigidite_composite(e_m, h_m, t_m, temperature: float, reglage: ReglageThermi
     i_coeur = h_coeur * e_coeur ** 3 / 12.0
     i_ext = h_ext * e_ext ** 3 / 12.0
 
-    module_si = reglage.e_silicium * (1.0 + reglage.tce_silicium * dT
+    e_si_ref = reglage.e_silicium if module_silicium is None else module_silicium
+    module_si = e_si_ref * (1.0 + reglage.tce_silicium * dT
                                       + 0.5 * reglage.tce2_silicium * dT ** 2)
     module_ox = reglage.e_oxyde * (1.0 + reglage.tce_oxyde * dT
                                    + 0.5 * reglage.tce2_oxyde * dT ** 2)
     return module_ox * (i_ext - i_coeur) + module_si * i_coeur
 
 
-def part_oxyde(e_m, h_m, t_m, reglage: ReglageThermique):
+def part_oxyde(e_m, h_m, t_m, reglage: ReglageThermique, module_silicium=None):
     """Fraction de la rigidité de flexion portée par l'oxyde, à la température
     de référence. C'est elle qui fixe le coefficient thermoélastique local :
     alpha = beta·alpha_oxyde + (1-beta)·alpha_silicium."""
@@ -119,14 +128,24 @@ def part_oxyde(e_m, h_m, t_m, reglage: ReglageThermique):
     h_c = np.maximum(h_m - 2.0 * conso * t_m, 1e-12)
     i_c = h_c * e_c ** 3 / 12.0
     i_e = (h_m + 2.0 * croiss * t_m) * (e_m + 2.0 * croiss * t_m) ** 3 / 12.0
+    e_si = reglage.e_silicium if module_silicium is None else module_silicium
     ox = reglage.e_oxyde * (i_e - i_c)
-    return ox / (ox + reglage.e_silicium * i_c)
+    return ox / (ox + e_si * i_c)
 
 
-def _frequence(s_m, e_m, h_m, t_m, temperature, inertie_balancier, reglage):
-    """Fréquence propre (Hz) à une température donnée, oxyde compris."""
+def _frequence(s_m, e_m, h_m, t_m, temperature, inertie_balancier, reglage,
+                module_silicium=None):
+    """Fréquence propre (Hz) à une température donnée, oxyde compris.
+
+    module_silicium : module du silicium par élément, fourni par la géométrie
+    quand le wafer est anisotrope. Il ne change pas seulement le niveau de la
+    fréquence : un silicium plus souple donne à l'oxyde une PART plus grande de
+    la rigidité, donc modifie l'épaisseur d'oxyde qui annule la dérive
+    thermique. Oublier de le propager ici rendait la compensation thermique
+    insensible au plan cristallin (corrigé le 2026-10-08)."""
     dT = float(temperature) - reglage.temperature_reference
-    rigidite = rigidite_composite(e_m, h_m, t_m, temperature, reglage)
+    rigidite = rigidite_composite(e_m, h_m, t_m, temperature, reglage,
+                                   module_silicium=module_silicium)
     longueur = s_m * (1.0 + reglage.cte_silicium * dT)
     couple = 1.0 / trapezoid(1.0 / rigidite, x=longueur)
     inertie = inertie_balancier * (1.0 + 2.0 * reglage.cte_balancier * dT) ** 1.0
@@ -140,12 +159,13 @@ def marche_temperature(geom, t_oxyde_um: float, temperatures, inertie_balancier:
     reglage = reglage or ReglageThermique()
     actif = geom.partie_active()
     s_m, e_m, h_m = actif.s * 1e-3, actif.epaisseur * 1e-3, actif.hauteur * 1e-3
+    mod = actif.module_young()
     t_m = t_oxyde_um * 1e-6
     f_ref = _frequence(s_m, e_m, h_m, t_m, reglage.temperature_reference,
-                       inertie_balancier, reglage)
+                       inertie_balancier, reglage, module_silicium=mod)
     temperatures = np.atleast_1d(np.asarray(temperatures, dtype=float))
     return np.array([86400.0 * (_frequence(s_m, e_m, h_m, t_m, T, inertie_balancier,
-                                            reglage) / f_ref - 1.0)
+                                            reglage, module_silicium=mod) / f_ref - 1.0)
                      for T in temperatures])
 
 
@@ -181,13 +201,14 @@ def epaisseur_oxyde_optimale(geom, inertie_balancier: float,
     # pour chaque candidat de l'optimisation.
     actif = geom.partie_active()
     s_m, e_m, h_m = actif.s * 1e-3, actif.epaisseur * 1e-3, actif.hauteur * 1e-3
+    mod = actif.module_young()
 
     def f(t_um):
         t_m = t_um * 1e-6
         return (_frequence(s_m, e_m, h_m, t_m, reglage.temperature_max,
-                           inertie_balancier, reglage)
+                           inertie_balancier, reglage, module_silicium=mod)
                 - _frequence(s_m, e_m, h_m, t_m, reglage.temperature_min,
-                             inertie_balancier, reglage))
+                             inertie_balancier, reglage, module_silicium=mod))
 
     bas, haut = f(0.0), f(plafond)
     if bas * haut > 0.0:
@@ -216,7 +237,8 @@ def analyser_thermique(geom, inertie_balancier: float, reglage: ReglageThermique
                   / (reglage.temperature_max - reglage.temperature_min))
 
     actif = geom.partie_active()
-    beta = part_oxyde(actif.epaisseur * 1e-3, actif.hauteur * 1e-3, t_oxyde_um * 1e-6, reglage)
+    beta = part_oxyde(actif.epaisseur * 1e-3, actif.hauteur * 1e-3, t_oxyde_um * 1e-6,
+                       reglage, module_silicium=actif.module_young())
     return {
         "valide": True,
         "epaisseur_oxyde_um": float(t_oxyde_um),

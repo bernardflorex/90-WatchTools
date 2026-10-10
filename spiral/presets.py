@@ -50,6 +50,37 @@ class SpecMouvement:
     inertie_balancier: float = 8e-10  # kg.m^2
     jeu_min_spires: float = 0.012     # mm
     amplitude_max: float = 340.0      # deg
+    # Côté depuis lequel le spiral est vu et depuis lequel les positions
+    # verticales sont nommées. Le spiral étant sous le coq, la vue naturelle
+    # est celle du rouage ; l'autre choix échange 3H et 9H.
+    vue_cote_rouage: bool = True
+    # Repère du MOUVEMENT, vu côté rouage et dessiné 6H EN HAUT -- l'attitude
+    # dans laquelle la pièce est examinée, et celle de la position COSC 6H. La
+    # tige de remontoir, qui sort à 3H, est alors À DROITE du dessin.
+    # La LIGNE DES CENTRES -- celle qui joint l'axe du balancier à
+    # celui de l'ancre, dite aussi ligne droite de l'échappement -- fait cet
+    # angle avec l'axe de tige, compté dans le sens trigonométrique TEL QU'ON
+    # LE VOIT côté fond. C'est sur elle que se fixe le spiral au collet, et, le
+    # nombre de tours étant entier, c'est sur elle que retombe le point de
+    # comptage, à l'opposé.
+    angle_echappement_deg: float = -6.2
+    # Sens de développement du spiral depuis le collet, vu côté fond.
+    sens_trigonometrique: bool = True
+    # LEQUEL DES DEUX BOUTS de la ligne des centres porte le collet. Une droite
+    # n'est définie qu'à 180° près par son angle : sans cette information, le
+    # spiral peut se retrouver dessiné en demi-tour par rapport au mouvement
+    # réel -- ce qui n'altère pas la dispersion mais inverse le signe du DVH.
+    # Vrai (défaut) : le bout qui pointe vers l'ancre, à l'opposé de la tige.
+    collet_cote_ancre: bool = True
+    # Plan cristallin du wafer. Le silicium n'a un module de Young isotrope
+    # DANS LE PLAN que sur un wafer (111) : sur un (001) il varie de 130 à
+    # 169 GPa selon la direction, avec une période de 90°, et la lame d'un
+    # spiral balaie forcément toutes ces directions. Le défaut "111" reproduit
+    # le comportement antérieur (169 GPa partout).
+    plan_cristallin: str = "111"
+    # Angle, dans le repère du dessin, de l'axe cristallin de référence du plan
+    # (<100> pour un (001)). Sans effet sur un (111).
+    orientation_cristal_deg: float = 0.0
 
     def sauvegarder(self, chemin: str):
         _sauvegarder(self, chemin)
@@ -165,7 +196,17 @@ def charger_configuration(chemin: str):
         # (spiral libre) au lieu de lever une KeyError.
         if cle in p_dict:
             p_dict[cle] = np.array(p_dict[cle], dtype=float)
-    parametres = ParametresSpiral(**p_dict)
+    # Les clés que la dataclass ne connaît plus sont écartées : un fichier
+    # écrit avant un remaniement de la paramétrisation reste rechargeable, au
+    # lieu de lever un TypeError sur un champ supprimé. Les clés absentes
+    # prennent simplement leur valeur par défaut.
+    from dataclasses import fields as _fields
+    connus = {f.name for f in _fields(ParametresSpiral)}
+    ignores = sorted(set(p_dict) - connus)
+    parametres = ParametresSpiral(**{k: v for k, v in p_dict.items() if k in connus})
+    if ignores:
+        print(f"charger_configuration : champs ignorés (paramétrisation modifiée) : "
+              f"{', '.join(ignores)}")
     bornes = BornesOptimisation(**data["bornes"])
     hyperparams = HyperparametresGA(**data["hyperparametres_ga"])
     reglage_echappement = ReglageEchappement(**data.get("echappement", {}))

@@ -43,12 +43,81 @@ from .modele import GeometrieSpiral
 from .physique import balayage_angulaire
 from .raquette import analyser_jeu_goupilles
 
-POSITIONS_VERTICALES_DEFAUT = {
-    "3H": np.radians(180.0),
-    "6H": np.radians(90.0),
-    "9H": np.radians(0.0),
-    "12H": np.radians(270.0),
+# Direction du vecteur gravité, dans le repère du tracé, pour chacune des
+# quatre positions verticales. Nommer ces directions engage une CHIRALITÉ : un
+# cadran vu de face fait tourner 12-3-6-9 dans le sens horaire, vu de dos dans
+# le sens antihoraire. Se tromper de côté échange 3H et 9H -- sans changer la
+# dispersion (c'est une permutation), mais en attribuant les valeurs aux
+# mauvaises positions dès qu'on les compare à un relevé de chronocomparateur.
+#
+# Le spiral est physiquement du CÔTÉ ROUAGE du mouvement, sous le coq : c'est
+# de ce côté qu'on le voit et qu'il est dessiné. C'est donc cette convention
+# qui fait défaut (diagnostic 2026-09-29 : la version précédente correspondait
+# à une lecture côté cadran).
+# ORIENTATION DU TRACÉ (fixée par l'utilisateur, 2026-09-29)
+# ---------------------------------------------------------
+# Le mouvement est regardé CÔTÉ ROUAGE, et dessiné dans l'attitude où on
+# l'examine : le repère 6H EN HAUT, la tige de remontoir À DROITE.
+#
+# Un premier jet le dessinait 12H en haut, ce qui plaçait la tige à gauche.
+# La chiralité était bonne -- vue de dos, 12-3-6-9 tourne bien dans le sens
+# antihoraire, ici comme là -- mais tout le repère était tourné d'un demi-tour
+# par rapport à la façon dont l'utilisateur regarde ses montres. L'erreur est
+# muette sur la dispersion (une rotation de 180° permute les positions deux à
+# deux) et n'apparaît que sur le SIGNE du DVH.
+#
+# Position des REPÈRES HORAIRES dans le tracé :
+REPERES_HORAIRES_COTE_ROUAGE = {
+    "6H": np.radians(90.0),     # en haut : c'est l'attitude de la position COSC 6H
+    "3H": np.radians(0.0),      # à droite : c'est de ce côté que sort la tige
+    "12H": np.radians(270.0),   # en bas
+    "9H": np.radians(180.0),    # à gauche
 }
+
+# Nommage COSC : une position porte le nom du repère horaire qui est EN HAUT.
+# En position « 6H » le 6 est donc en haut, et la gravité pointe vers le 12 --
+# c'est l'énoncé même du critère. La direction de g est donc toujours celle du
+# repère OPPOSÉ, soit le repère de la position tourné de 180°. Les confondre
+# décale tout l'étiquetage d'un demi-tour.
+#
+# Les dictionnaires ci-dessous se DÉDUISENT de REPERES_HORAIRES_COTE_ROUAGE au
+# lieu d'être écrits à la main : les tenir à jour séparément est précisément ce
+# qui avait laissé passer le demi-tour.
+POSITIONS_VERTICALES_COTE_ROUAGE = {
+    nom: (angle + np.pi) % (2 * np.pi)
+    for nom, angle in REPERES_HORAIRES_COTE_ROUAGE.items()
+}
+# Vue côté cadran : miroir gauche-droite, qui échange 3H et 9H et laisse 6H et
+# 12H en place.
+POSITIONS_VERTICALES_COTE_CADRAN = {
+    nom: (np.pi - angle) % (2 * np.pi)
+    for nom, angle in POSITIONS_VERTICALES_COTE_ROUAGE.items()
+}
+POSITIONS_VERTICALES_DEFAUT = POSITIONS_VERTICALES_COTE_ROUAGE
+
+
+def reperes_horaires(cote_rouage: bool = True) -> dict:
+    """Direction des repères horaires du cadran dans le repère du tracé."""
+    if cote_rouage:
+        return dict(REPERES_HORAIRES_COTE_ROUAGE)
+    return {n: (np.pi - a) % (2 * np.pi) for n, a in REPERES_HORAIRES_COTE_ROUAGE.items()}
+
+
+def positions_verticales(cote_rouage: bool = True) -> dict:
+    """Positions verticales selon le côté depuis lequel le spiral est vu.
+
+    cote_rouage=True (défaut) : vue depuis le rouage, sous le coq, là où le
+    spiral se trouve réellement. Les heures 12-3-6-9 y tournent dans le sens
+    ANTIHORAIRE, comme tout cadran vu de dos.
+    """
+    return dict(POSITIONS_VERTICALES_COTE_ROUAGE if cote_rouage
+                else POSITIONS_VERTICALES_COTE_CADRAN)
+
+
+def nom_vue(cote_rouage: bool = True) -> str:
+    return ("Vue côté rouage du mouvement (12-3-6-9 en sens antihoraire)"
+            if cote_rouage else
+            "Vue côté cadran (12-3-6-9 en sens horaire)")
 
 # Les deux positions horizontales (cadran haut / cadran bas) sont, pour ce
 # modèle, strictement identiques : la gravité y est perpendiculaire au plan du
@@ -347,6 +416,13 @@ def analyser_marches(geom: GeometrieSpiral, r_min: float, freq_cible: float,
     Clés du dictionnaire retourné :
         amplitudes_deg     grille d'amplitudes de toutes les courbes ci-dessous
         gravite            {position verticale: marche (s/j)} -- terme de CG
+        dvh                critère COSC : marche en position 6H moins cadran haut,
+                           soit exactement le terme de gravité en 6H
+        dvh_reference      sa valeur à l'amplitude de référence
+        sensibilite_module amplitude A du vecteur de sensibilité à la gravité :
+                           c'est le MAXIMUM que DVH puisse atteindre, toutes
+                           orientations confondues, et le seul gain inconditionnel
+        sensibilite_phase_deg  direction de ce vecteur ; DVH = A·cos(90° − phase)
         isochronisme       marche propre du spiral (s/j), toutes positions
         echappement        marche due à l'échappement (s/j), toutes positions
         jeu_goupilles      marche due au jeu de raquette (s/j), toutes positions
@@ -413,9 +489,44 @@ def analyser_marches(geom: GeometrieSpiral, r_min: float, freq_cible: float,
     ecart_compensation = (iso_basse - float(reglage.retard_s_par_j)
                           + fraction * jeu_basse)
 
+    # --- Critère COSC DVH et vecteur de sensibilité à la gravité ---
+    # DVH = marche en position COSC 6H moins la position cadran haut. Comme
+    # l'isochronisme propre, l'échappement et le jeu de goupilles sont
+    # IDENTIQUES dans les deux positions, ils s'annulent : DVH vaut exactement
+    # le terme de gravité en 6H (vérifié à 5.6e-16 près). Optimiser DVH, c'est
+    # donc optimiser l'orbite du centre de gravité, et rien d'autre.
+    #
+    # La formule d'Airy étant LINÉAIRE en g, la marche due à la gravité est la
+    # projection d'un vecteur unique sur la direction de g : marche(θ) =
+    # A·cos(θ − φ), sinusoïde parfaite (résidu 7e-16 sur 72 directions). Deux
+    # positions orthogonales suffisent donc à le déterminer entièrement, sans
+    # calcul supplémentaire -- et il dit d'un coup d'œil ce que l'orientation
+    # du spiral dans le mouvement peut ou ne peut pas faire pour DVH.
+    dvh = marches_grav["6H"] if "6H" in marches_grav else np.zeros_like(amplitudes_deg)
+    composante_x = marches_grav.get("3H")      # g à 0°
+    composante_y = marches_grav.get("6H")      # g à 90°
+    if composante_x is not None and composante_y is not None:
+        module = np.hypot(composante_x, composante_y)
+        phase = np.degrees(np.arctan2(composante_y, composante_x))
+    else:
+        module = np.zeros_like(amplitudes_deg)
+        phase = np.zeros_like(amplitudes_deg)
+    i_ref = int(np.argmin(np.abs(amplitudes_deg - reglage.amplitude_reference_deg)))
+
     return {
         "amplitudes_deg": amplitudes_deg,
         "gravite": marches_grav,
+        "dvh": dvh,
+        "dvh_reference": float(dvh[i_ref]),
+        # Pire cas sur toute la plage d'amplitude, et non la seule valeur à
+        # l'amplitude de référence : c'est ce que l'optimisation minimise, par
+        # cohérence avec la dispersion (elle aussi prise au pire cas). Un
+        # spiral réglé juste à 300° mais mauvais à 200° n'est pas un bon spiral.
+        "dvh_max": float(np.max(np.abs(dvh))) if len(dvh) else 0.0,
+        "sensibilite_module": module,
+        "sensibilite_module_reference": float(module[i_ref]),
+        "sensibilite_phase_deg": float(phase[i_ref] % 360.0),
+        "amplitude_dvh_deg": float(amplitudes_deg[i_ref]),
         "isochronisme": marche_iso,
         "echappement": marche_ech,
         "jeu_goupilles": marche_jeu,

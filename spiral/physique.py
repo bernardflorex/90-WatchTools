@@ -13,7 +13,7 @@ ou d'une génération paramétrique : la physique ne connaît que
 from dataclasses import replace
 
 import numpy as np
-from scipy.integrate import trapezoid
+from scipy.integrate import cumulative_trapezoid, trapezoid
 from scipy.optimize import minimize as scipy_minimize, root
 
 from .constantes import E_SILICIUM, RHO_SILICIUM
@@ -323,9 +323,13 @@ def frequence_propre(geom: GeometrieSpiral, inertie_balancier: float) -> float:
     return (1.0 / (2.0 * np.pi)) * np.sqrt(couple / inertie_balancier)
 
 
-def marche_raquette(geom: GeometrieSpiral, inertie_balancier: float, n_pas_arc: int):
+def marche_raquette(geom: GeometrieSpiral, inertie_balancier: float):
     """Plage de marche (s/j) réellement couverte par la raquette, mesurée en
     déplaçant le point de comptage d'un bout à l'autre de l'arc concentrique.
+
+    La course des goupilles (demi_parcours_raquette) est portée par la
+    géométrie : elle a été déduite de la plage de réglage exigée au moment de
+    la construction.
 
     Retourne (marche_rapide, marche_lente, ecart_total) : la marche obtenue
     quand les goupilles sont poussées au plus près du corps (spiral actif le
@@ -338,18 +342,35 @@ def marche_raquette(geom: GeometrieSpiral, inertie_balancier: float, n_pas_arc: 
     fonction contrôle ce que la géométrie obtenue donne réellement. Même
     logique que la mise à l'échelle de l'épaisseur, calculée analytiquement
     puis vérifiée sur la géométrie finale."""
-    if not geom.a_partie_morte or n_pas_arc < 3:
+    if not geom.a_partie_morte or geom.demi_parcours_raquette <= 0.0:
         return 0.0, 0.0, 0.0
-    # Le parcours des goupilles est centré sur le point de comptage, et il ne
-    # va PAS jusqu'au bout de la géométrie : l'arc se prolonge au-delà jusqu'au
-    # piton (portion que la raquette n'atteint jamais). Les bornes se déduisent
-    # donc de n_actif, pas de la fin du tableau.
-    n_arc = n_pas_arc | 1
-    i_debut = max(geom.n_actif - 1 - n_arc // 2, 4)
-    i_fin = min(i_debut + n_arc - 1, geom.n - 1)
-    f_nominal = frequence_propre(geom, inertie_balancier)
-    f_rapide = frequence_propre(replace(geom, n_actif=i_debut + 1), inertie_balancier)
-    f_lente = frequence_propre(replace(geom, n_actif=i_fin + 1), inertie_balancier)
+    # Les bornes du parcours sont repérées par ABSCISSE CURVILIGNE et non par
+    # nombre d'éléments : la densité du maillage change d'une zone à l'autre,
+    # et le parcours doit valoir la même LONGUEUR de lame quel que soit le
+    # maillage. Le parcours est centré sur le point de comptage et ne va pas
+    # jusqu'au bout de la géométrie : l'arc se prolonge au-delà jusqu'au piton.
+    s_comptage = float(geom.s[geom.n_actif - 1])
+    demi = float(geom.demi_parcours_raquette)
+
+    def frequence_a(s_cible):
+        """Fréquence pour une longueur active arrêtée à l'abscisse s_cible.
+
+        La souplesse est INTERPOLÉE sur son intégrale cumulée plutôt que
+        tronquée au noeud le plus proche : la course des goupilles ne vaut que
+        quelques éléments sur un arc finement maillé, et l'arrondi au noeud
+        faussait la plage obtenue de 1.5% en la rendant dépendante de la
+        densité du maillage."""
+        s_m = geom.s * 1e-3
+        integrande = 1.0 / geom.rigidite_flexion()
+        cumul = np.concatenate([[0.0], cumulative_trapezoid(integrande, x=s_m)])
+        souplesse = float(np.interp(s_cible * 1e-3, s_m, cumul))
+        if souplesse <= 0.0:
+            return float("nan")
+        return np.sqrt((1.0 / souplesse) / inertie_balancier) / (2.0 * np.pi)
+
+    f_nominal = frequence_a(s_comptage)
+    f_rapide = frequence_a(max(s_comptage - demi, geom.s[4]))
+    f_lente = frequence_a(min(s_comptage + demi, geom.s[-1]))
     marche_rapide = 86400.0 * (f_rapide / f_nominal - 1.0)
     marche_lente = 86400.0 * (f_lente / f_nominal - 1.0)
     return float(marche_rapide), float(marche_lente), float(marche_rapide - marche_lente)

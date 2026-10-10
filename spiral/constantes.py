@@ -4,7 +4,11 @@ transversalement isotrope dans le plan : le module d'Young y est le même
 quelle que soit la direction de flexion dans le plan du spiral, ce qui
 autorise un scalaire au lieu d'un tenseur."""
 
-E_SILICIUM = 169e9      # Module de Young du silicium <111> (Pa)
+# E_SILICIUM est DÉFINI PLUS BAS, à partir des souplesses du cristal : c'est le
+# module dans le plan d'un wafer (111), seul plan isotrope dans le plan. Il
+# valait 169e9 en dur ; la valeur exacte est 168,92 GPa, et les deux écritures
+# ont fini par se contredire de 0,05 % (détecté par le contrôle de fréquence
+# absolue, 2026-10-08). Une seule source de vérité : les souplesses.
 RHO_SILICIUM = 2330.0   # Masse volumique du silicium (kg/m^3)
 G_TERRE = 9.81          # m/s^2
 
@@ -40,3 +44,73 @@ CTE_OXYDE = 0.5e-6
 # de silicium et dépasse de 0.56 µm vers l'extérieur (rapport volumique 2.27).
 CONSOMMATION_OXYDATION = 0.44
 CROISSANCE_OXYDATION = 0.56
+
+
+# --- Anisotropie élastique du silicium -------------------------------------
+# E_SILICIUM ci-dessus (169 GPa) n'est PAS une propriété du silicium : c'est sa
+# valeur dans le plan d'un wafer (111), le seul plan où le module soit isotrope
+# dans le plan. Sur un wafer (001), le module varie de 130 à 169 GPa selon la
+# direction, avec une période de 90° — 30 % d'écart, soit 13 % sur la raideur
+# intégrée d'un spiral qui balaie toutes les directions. L'ignorer est une
+# erreur de modèle, pas une approximation (remonté par l'utilisateur,
+# 2026-10-08).
+#
+# Souplesses du silicium monocristallin, en Pa^-1. Ce sont elles les vraies
+# constantes matériau ; tous les modules s'en déduisent.
+S11_SILICIUM = 7.68e-12
+S12_SILICIUM = -2.14e-12
+S44_SILICIUM = 12.6e-12
+
+# Base orthonormée DANS LE PLAN de chaque wafer, exprimée dans le repère
+# cristallin. Le premier vecteur est l'axe de référence : c'est par rapport à
+# lui qu'est compté l'angle d'orientation du dessin sur le wafer.
+_BASES_PLAN = {
+    #        axe de référence           axe à 90° de celui-ci
+    "001": ((1.0, 0.0, 0.0),            (0.0, 1.0, 0.0)),            # réf. <100>
+    "111": ((1.0, -1.0, 0.0),           (1.0, 1.0, -2.0)),           # réf. <1-10>
+    "110": ((0.0, 0.0, 1.0),            (1.0, -1.0, 0.0)),           # réf. <001>
+}
+PLANS_CRISTALLINS = tuple(_BASES_PLAN)
+
+
+def module_young_silicium(plan: str, angle_rad):
+    """Module de Young du silicium (Pa) dans le PLAN du wafer `plan`, pour une
+    direction faisant `angle_rad` avec l'axe de référence de ce plan.
+
+    Loi standard pour un cristal cubique, en fonction des cosinus directeurs
+    (l1, l2, l3) de la direction de traction :
+
+        1/E = s11 - 2·(s11 - s12 - s44/2)·(l1²l2² + l2²l3² + l3²l1²)
+
+    C'est bien le module en TRACTION-COMPRESSION uniaxiale le long de la lame
+    qui intervient : en flexion plane, les fibres s'allongent et se raccourcissent
+    dans la direction de la poutre, pas transversalement.
+
+    Valeurs de contrôle : E<100> = 130,2 GPa, E<110> = 168,9 GPa,
+    E<111> = 187,5 GPa ; dans le plan (111), E = 168,9 GPa quelle que soit la
+    direction.
+    """
+    try:
+        u, v = _BASES_PLAN[plan]
+    except KeyError:
+        raise ValueError(
+            f"Plan cristallin inconnu : {plan!r}. Attendu l'un de "
+            f"{', '.join(PLANS_CRISTALLINS)}.") from None
+    import numpy as _np
+    u = _np.asarray(u, dtype=float)
+    v = _np.asarray(v, dtype=float)
+    u /= _np.linalg.norm(u)
+    v /= _np.linalg.norm(v)
+    a = _np.asarray(angle_rad, dtype=float)
+    # l a pour forme (..., 3) : une direction unitaire par angle.
+    l = _np.cos(a)[..., None] * u + _np.sin(a)[..., None] * v
+    l2 = l ** 2
+    gamma = l2[..., 0] * l2[..., 1] + l2[..., 1] * l2[..., 2] + l2[..., 2] * l2[..., 0]
+    s_aniso = S11_SILICIUM - S12_SILICIUM - S44_SILICIUM / 2.0
+    return 1.0 / (S11_SILICIUM - 2.0 * s_aniso * gamma)
+
+
+# Module dans le plan d'un wafer (111) : isotrope, c'est la valeur de référence
+# du projet et le défaut partout où un module scalaire suffit. Déduite des
+# souplesses ci-dessus, donc toujours cohérente avec module_young_silicium.
+E_SILICIUM = float(module_young_silicium("111", 0.0))

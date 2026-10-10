@@ -29,6 +29,23 @@ class GeometrieSpiral:
     # de la lame FINIE : c'est la pièce oxydée qui oscille et qui doit passer
     # entre les spires.
     epaisseur_oxyde: float = 0.0
+    # Demi-course des goupilles de raquette le long de l'arc concentrique (mm),
+    # de part et d'autre du point de comptage. Déduite de la plage de réglage
+    # exigée, pas choisie. Portée par la géométrie au même titre que n_actif et
+    # l'épaisseur d'oxyde : c'est une propriété de la pièce montée, dont la
+    # physique a besoin et que la seule fibre neutre ne dit pas.
+    demi_parcours_raquette: float = 0.0
+    # Plan cristallin du wafer et orientation du DESSIN sur ce wafer. Le
+    # silicium n'a un module isotrope dans le plan que sur un wafer (111) ; sur
+    # un (001) il varie de 130 à 169 GPa avec une période de 90°, et la lame
+    # d'un spiral balaie toutes ces directions. Le défaut "111" reproduit
+    # exactement le comportement antérieur, où E valait 169 GPa partout.
+    plan_cristallin: str = "111"
+    # Angle, dans le repère du dessin, de l'axe cristallin de référence du plan
+    # (<100> pour un (001), <1-10> pour un (111) ou un (110)). Sans effet sur un
+    # (111), isotrope ; sur un (001) il décide de l'orientation des quatre
+    # directions molles par rapport au spiral.
+    orientation_cristal_deg: float = 0.0
     # Convention d'unités du module : TOUT est en mm (x, y, epaisseur, hauteur,
     # s), comme un DXF. La conversion en mètres (SI) se fait localement, au
     # point d'usage, dans les formules physiques (cf. physique.py,
@@ -67,6 +84,67 @@ class GeometrieSpiral:
     def a_partie_morte(self) -> bool:
         return self.n_actif < self.n
 
+    def reechantillonner(self, n_points: int) -> "GeometrieSpiral":
+        """Même COURBE, décrite par un autre nombre de points.
+
+        Sert à l'export DXF : la densité de points qu'exige un fichier de
+        gravure n'a rien à voir avec celle que demande le calcul. Le maillage
+        de calcul est un compromis entre précision et temps ; le DXF, lui, doit
+        seulement décrire le contour assez finement pour la machine, et un
+        fichier trop dense est aussi pénible qu'un fichier trop grossier.
+
+        L'interpolation est faite à ABSCISSE CURVILIGNE uniforme, séparément
+        sur la partie active et sur la portion morte : le point de comptage est
+        une frontière physique (c'est là que les goupilles saisissent la lame),
+        il doit rester exactement un point du maillage et non tomber entre
+        deux. Sans cette précaution, n_actif perdrait son sens après un
+        ré-échantillonnage.
+
+        L'épaisseur est interpolée par PCHIP et non par spline cubique : une
+        spline peut dépasser entre deux nœuds et produire localement une
+        épaisseur hors de la plage d'origine, ce qui n'a aucun sens sur une
+        cote de fabrication.
+        """
+        from scipy.interpolate import PchipInterpolator
+
+        if n_points < 8:
+            raise ValueError(f"n_points={n_points} : trop peu de points pour un contour")
+        if n_points == self.n:
+            return self
+
+        def _bloc(i0, i1, n_cible):
+            """Ré-échantillonne les éléments [i0, i1) sur n_cible points."""
+            s_bloc = self.s[i0:i1]
+            cible = np.linspace(s_bloc[0], s_bloc[-1], n_cible)
+            return (np.interp(cible, s_bloc, self.x[i0:i1]),
+                    np.interp(cible, s_bloc, self.y[i0:i1]),
+                    PchipInterpolator(s_bloc, self.epaisseur[i0:i1])(cible))
+
+        if not self.a_partie_morte:
+            x, y, e = _bloc(0, self.n, n_points)
+            n_actif = n_points
+        else:
+            # La répartition suit la LONGUEUR de chaque portion, pas son nombre
+            # d'éléments d'origine : le maillage de calcul densifie
+            # volontairement les zones terminales, ce qui n'a pas lieu d'être
+            # sur un contour de gravure.
+            part = self.s[self.n_actif - 1] / self.longueur
+            n_actif = max(4, min(n_points - 4, int(round(n_points * part))))
+            xa, ya, ea = _bloc(0, self.n_actif, n_actif)
+            xm, ym, em = _bloc(self.n_actif - 1, self.n, n_points - n_actif + 1)
+            # Le premier point du bloc mort EST le point de comptage, déjà
+            # présent en fin de bloc actif : on ne le écrit qu'une fois.
+            x, y, e = (np.concatenate([xa, xm[1:]]), np.concatenate([ya, ym[1:]]),
+                       np.concatenate([ea, em[1:]]))
+
+        return GeometrieSpiral(
+            x=x, y=y, epaisseur=e, hauteur=self.hauteur, n_actif=n_actif,
+            epaisseur_oxyde=self.epaisseur_oxyde,
+            demi_parcours_raquette=self.demi_parcours_raquette,
+            plan_cristallin=self.plan_cristallin,
+            orientation_cristal_deg=self.orientation_cristal_deg,
+        )
+
     def partie_active(self) -> "GeometrieSpiral":
         """Sous-géométrie réellement sollicitée en flexion, du collet au point
         de comptage. C'est elle, et elle seule, que voit le solveur elastica :
@@ -82,7 +160,9 @@ class GeometrieSpiral:
             x=self.x[:self.n_actif], y=self.y[:self.n_actif],
             epaisseur=self.epaisseur[:self.n_actif], hauteur=self.hauteur,
             epaisseur_oxyde=self.epaisseur_oxyde,
-        )
+            plan_cristallin=self.plan_cristallin,
+            orientation_cristal_deg=self.orientation_cristal_deg,
+        )   # pas de demi_parcours : la partie active seule ne porte pas de goupilles
 
     @property
     def epaisseur_finie(self) -> np.ndarray:
@@ -90,6 +170,22 @@ class GeometrieSpiral:
         occupe l'espace entre spires et qui porte le poids."""
         from .constantes import CROISSANCE_OXYDATION
         return self.epaisseur + 2.0 * CROISSANCE_OXYDATION * self.epaisseur_oxyde
+
+    def module_young(self) -> np.ndarray:
+        """Module de Young du silicium VU PAR CHAQUE ÉLÉMENT (Pa).
+
+        La lame travaille en traction-compression le long d'elle-même : le
+        module qui compte est donc celui de la direction de la TANGENTE locale,
+        et sur un wafer anisotrope il change tout au long du spiral.
+
+        La tangente est prise par différences finies, comme partout ailleurs
+        dans le programme (voir tangente_normale) : la cohérence importe plus
+        que le raffinement, le module variant lentement le long de la lame.
+        """
+        from .constantes import module_young_silicium
+        dx, dy = np.gradient(self.x), np.gradient(self.y)
+        angle = np.arctan2(dy, dx) - np.radians(self.orientation_cristal_deg)
+        return module_young_silicium(self.plan_cristallin, angle)
 
     def rigidite_flexion(self) -> np.ndarray:
         """Rigidité de flexion E·I (N.m²) dans le plan, à la température de
@@ -99,7 +195,8 @@ class GeometrieSpiral:
         reglage = ReglageThermique()
         return rigidite_composite(self.epaisseur * 1e-3, self.hauteur * 1e-3,
                                    self.epaisseur_oxyde * 1e-3,
-                                   reglage.temperature_reference, reglage)
+                                   reglage.temperature_reference, reglage,
+                                   module_silicium=self.module_young())
 
     def souplesse(self) -> float:
         """Souplesse intégrée de la PARTIE ACTIVE, integrale(ds / E·I) en
@@ -159,7 +256,8 @@ class GeometrieSpiral:
             n_actif = int(np.searchsorted(s_cible, self.s[self.n_actif - 1]) + 1)
             n_actif = int(np.clip(n_actif, 4, n_elements))
         return GeometrieSpiral(x=x_new, y=y_new, epaisseur=e_new, hauteur=self.hauteur,
-                                n_actif=n_actif, epaisseur_oxyde=self.epaisseur_oxyde)
+                                n_actif=n_actif, epaisseur_oxyde=self.epaisseur_oxyde,
+                                demi_parcours_raquette=self.demi_parcours_raquette)
 
     def masse_elementaire(self, rho: float) -> np.ndarray:
         """Masse (kg) de chaque élément, longueurs/épaisseurs en mm -> m.

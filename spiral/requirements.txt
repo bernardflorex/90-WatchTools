@@ -6,3 +6,8 @@ pymoo
 joblib
 PySide6
 matplotlib
+# ATTENTION : c'est bien « python-docx », qui fournit le module « docx ».
+# Le paquet PyPI nommé « docx » est un tout autre projet, abandonné en 2014 et
+# Python 2 seulement : installé par erreur, il occupe le nom et fait échouer
+# l'import sur « No module named 'exceptions' ». Le désinstaller d'abord.
+python-docx

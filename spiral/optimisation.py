@@ -135,9 +135,16 @@ def evaluer_candidat(x_libre: np.ndarray, base: ParametresSpiral,
                       reglage_echappement: ReglageEchappement = None,
                       reglage_thermique: ReglageThermique = None):
     """Évalue un vecteur de conception : retourne (dispersion_marche_s_par_j,
-    jeu_min_mm, decentrage_mm, ecart_compensation_s_par_j, epaisseur_oxyde_um). C'est la fonction
-    appelée en parallèle (joblib) pour chaque individu de la population à
-    chaque génération.
+    jeu_min_mm, decentrage_mm, ecart_compensation_s_par_j, epaisseur_oxyde_um,
+    dvh_s_par_j). C'est la fonction appelée en parallèle (joblib) pour chaque
+    individu de la population à chaque génération.
+
+    dvh_s_par_j : critère COSC, différence de marche entre la position 6H et la
+    position horizontale, prise AU PIRE CAS sur la plage d'amplitude (comme la
+    dispersion). Comme la marche en position verticale suit exactement
+    une loi marche(θ) = A·cos(θ − φ) (vérifié à 7e-16 près sur 72 directions),
+    le DVH vaut A·cos(90° − φ) : il dépend donc AUSSI de la phase φ, que la
+    dispersion seule ignore. C'est pourquoi il est retourné à part.
 
     ecart_compensation_s_par_j : écart signé entre l'avance que le spiral
     produit de lui-même à l'amplitude basse (isochronisme propre) et celle
@@ -170,7 +177,8 @@ def evaluer_candidat(x_libre: np.ndarray, base: ParametresSpiral,
                                        reglage_thermique=reglage_thermique)
 
     if not (diag["geometrie_valide"] and diag["grossmann_monotone"] and diag["phillips_monotone"]):
-        return PENALITE_MARCHE_S_PAR_J, PENALITE_JEU_MM, 0.0, PENALITE_ECART_S_PAR_J, 0.0
+        return (PENALITE_MARCHE_S_PAR_J, PENALITE_JEU_MM, 0.0, PENALITE_ECART_S_PAR_J,
+                0.0, PENALITE_MARCHE_S_PAR_J)
 
     amp_min, amp_max = float(np.min(amplitudes_analyse_deg)), float(np.max(amplitudes_analyse_deg))
     amplitudes_denses = np.arange(amp_min, amp_max + 1e-6, pas_dispersion_deg)
@@ -183,6 +191,7 @@ def evaluer_candidat(x_libre: np.ndarray, base: ParametresSpiral,
     diag_orbite = resultat["diag_orbite"]
     dispersion = resultat["dispersion_gravite"]
     ecart = resultat["ecart_compensation"]
+    dvh = resultat["dvh_max"]
     decentrage = float(np.hypot(np.mean(diag_orbite["x_cg_mm"]), np.mean(diag_orbite["y_cg_mm"])))
     jeu = diag_orbite["jeu_min_mm"]
 
@@ -192,9 +201,11 @@ def evaluer_candidat(x_libre: np.ndarray, base: ParametresSpiral,
         jeu = PENALITE_JEU_MM
     if not np.isfinite(ecart):
         ecart = PENALITE_ECART_S_PAR_J
+    if not np.isfinite(dvh) or dvh > PENALITE_MARCHE_S_PAR_J:
+        dvh = PENALITE_MARCHE_S_PAR_J
 
     return (float(dispersion), float(jeu), decentrage, float(ecart),
-            float(geom.epaisseur_oxyde * 1000.0))
+            float(geom.epaisseur_oxyde * 1000.0), float(dvh))
 
 
 def sonder_faisabilite(base: ParametresSpiral, bornes: BornesOptimisation,
@@ -247,16 +258,18 @@ def sonder_faisabilite(base: ParametresSpiral, bornes: BornesOptimisation,
     jeu = np.array([r[1] for r in resultats])
     ecart = np.array([r[3] for r in resultats])
     oxyde = np.array([r[4] for r in resultats])
+    dvh = np.array([r[5] for r in resultats])
     ordre = np.argsort(jeu)[::-1]  # du meilleur (jeu le plus grand) au pire
     classement = ordre[:min(n_classement, len(ordre))]
 
     return {
         "X": X, "dispersion": dispersion, "jeu_mm": jeu, "ecart_compensation": ecart,
-        "oxyde_um": oxyde,
+        "oxyde_um": oxyde, "dvh": dvh,
         "ordre": ordre,
         "classement": [
             {"x": X[i], "dispersion": float(dispersion[i]), "jeu_mm": float(jeu[i]),
-             "ecart_compensation": float(ecart[i]), "oxyde_um": float(oxyde[i])}
+             "ecart_compensation": float(ecart[i]), "oxyde_um": float(oxyde[i]),
+             "dvh": float(dvh[i])}
             for i in classement
         ],
         "x_meilleur": X[ordre[0]], "jeu_meilleur_mm": float(jeu[ordre[0]]),
@@ -266,8 +279,9 @@ def sonder_faisabilite(base: ParametresSpiral, bornes: BornesOptimisation,
 
 class ProblemeSpiral(Problem):
     """Problème pymoo à 2 objectifs :
-        F[:,0] = dispersion de marche entre positions verticales (s/j), à
-                 MINIMISER -- objectif réel du cahier des charges.
+        F[:,0] = critère chronométrique (s/j), à MINIMISER : dispersion de
+                 marche entre positions verticales PLUS |DVH|, le critère de
+                 contrôle COSC (marche en position 6H moins marche à plat).
         F[:,1] = -jeu inter-spires minimal (mm), plafonné à jeu_max_cap pour
                  éviter une incitation excessive au-delà d'une marge de
                  sécurité déjà suffisante (même logique que spiropt_v1).
@@ -293,14 +307,29 @@ class ProblemeSpiral(Problem):
     (les deux viennent de la même orbite de CG) -- l'ajouter dilue le front
     de Pareto sans apporter d'arbitrage réellement indépendant. Reste
     accessible via evaluer_candidat pour analyse a posteriori.
+
+    Pourquoi le DVH s'AJOUTE à la dispersion au lieu de former un 3e objectif
+    (choix de l'utilisateur, 2026-09-29) : les deux se lisent en s/j et vont
+    dans le même sens -- aucun arbitrage à exposer, donc rien à gagner à
+    diluer le front de Pareto d'une dimension de plus. Ils ne sont pourtant
+    pas redondants. La marche en position verticale suit exactement
+    marche(θ) = A·cos(θ − φ) ; la dispersion ne voit que le MODULE A, alors
+    que le DVH = A·cos(90° − φ) voit aussi la PHASE. À dispersion égale, la
+    somme préfère donc les géométries dont la phase reporte l'effet résiduel
+    de gravité sur 3H et 9H plutôt que sur la position 6H, celle que le COSC
+    note. C'est précisément le degré de liberté que la dispersion seule
+    ignorait. Le poids reste exposé (`poids_dvh`) pour pouvoir revenir à
+    l'ancien comportement en le mettant à zéro.
     """
 
     def __init__(self, base: ParametresSpiral, bornes: BornesOptimisation,
                  amplitudes_analyse_deg: np.ndarray, jeu_min_requis: float,
                  jeu_max_cap: float = 0.080, pas_balayage_deg: float = 20.0, n_jobs: int = -1,
                  reglage_echappement: ReglageEchappement = None,
-                 reglage_thermique: ReglageThermique = None):
+                 reglage_thermique: ReglageThermique = None,
+                 poids_dvh: float = 1.0):
         self.base = base
+        self.poids_dvh = float(poids_dvh)
         self.amplitudes_analyse_deg = np.asarray(amplitudes_analyse_deg, dtype=float)
         self.jeu_min_requis = jeu_min_requis
         self.jeu_max_cap = jeu_max_cap
@@ -329,8 +358,10 @@ class ProblemeSpiral(Problem):
         jeu = np.array([r[1] for r in resultats])
         ecart = np.array([r[3] for r in resultats])
         oxyde = np.array([r[4] for r in resultats])
+        dvh = np.array([r[5] for r in resultats])
 
-        out["F"] = np.column_stack([dispersion, -np.minimum(jeu, self.jeu_max_cap)])
+        critere = dispersion + self.poids_dvh * np.abs(dvh)
+        out["F"] = np.column_stack([critere, -np.minimum(jeu, self.jeu_max_cap)])
         contraintes = [self.jeu_min_requis - jeu]
         if self.reglage_echappement.actif:
             contraintes.append(np.abs(ecart) - self.reglage_echappement.tolerance_s_par_j)
@@ -376,7 +407,8 @@ def lancer_optimisation(base: ParametresSpiral, bornes: BornesOptimisation,
                          warm_start: bool = True, x0: np.ndarray = None, callback=None,
                          pas_balayage_deg: float = 20.0,
                          reglage_echappement: ReglageEchappement = None,
-                         reglage_thermique: ReglageThermique = None):
+                         reglage_thermique: ReglageThermique = None,
+                         poids_dvh: float = 1.0):
     """Lance NSGA-II et retourne le résultat pymoo (res.X, res.F : ensemble
     de solutions non-dominées). Fonction pure, sans dépendance Qt -- la
     future GUI (Phase 3) l'appellera depuis un QThread, un script ou un
@@ -396,7 +428,8 @@ def lancer_optimisation(base: ParametresSpiral, bornes: BornesOptimisation,
     probleme = ProblemeSpiral(base, bornes, amplitudes_analyse_deg, jeu_min_requis,
                                pas_balayage_deg=pas_balayage_deg,
                                reglage_echappement=reglage_echappement,
-                               reglage_thermique=reglage_thermique)
+                               reglage_thermique=reglage_thermique,
+                               poids_dvh=poids_dvh)
 
     if warm_start:
         if x0 is None:
