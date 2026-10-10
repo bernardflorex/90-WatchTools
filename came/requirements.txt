@@ -1,0 +1,21 @@
+# Dimensionnement d'un coeur de chronographe - dependances
+#   pip install -r requirements.txt
+#
+# Les lanceurs `lancer.sh` (Linux) et `lancer.bat` (Windows) creent
+# l'environnement et installent tout cela d'eux-memes au premier demarrage.
+
+# Interface graphique. C'est la seule dependance dont le programme ne peut
+# pas se passer. PySide6 est le portage officiel de Qt, sous LGPL : il permet
+# de diffuser le programme en logiciel libre sans la contrainte GPL de PyQt6.
+PySide6>=6.6
+
+# Acceleration du noyau de calcul. Sans elles tout fonctionne a l'identique,
+# en Python pur : les deux chemins sont valides l'un contre l'autre, et leurs
+# resultats concordent a 2e-15 pres.
+numpy>=1.24 ; python_version >= "3.9"
+numba>=0.60 ; python_version >= "3.9"
+
+# Ecriture des DXF. Sans elle, l'export retombe sur une ecriture en texte
+# brut, que certains logiciels de CAO relisent mal : un DXF sans table de
+# calques y donne des points et des droites, mais pas de coeur.
+ezdxf>=1.1

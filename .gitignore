@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+# environnement cree par erreur dans le projet (chemin relatif)
+/home/
+.venv/

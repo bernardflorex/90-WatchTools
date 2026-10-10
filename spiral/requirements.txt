@@ -1,0 +1,9 @@
+numpy
+scipy
+ezdxf
+numba
+pymoo
+joblib
+PySide6
+matplotlib
+python-docx

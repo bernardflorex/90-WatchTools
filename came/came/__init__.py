@@ -1,0 +1,1 @@
+"""Dimensionnement de cames horlogeres."""

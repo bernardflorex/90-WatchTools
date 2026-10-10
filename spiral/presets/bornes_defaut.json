@@ -1,0 +1,10 @@
+{
+  "spread_epaisseur_relatif": 0.35,
+  "spread_delta_r_mm": 0.01,
+  "spread_grossmann_relatif": 0.25,
+  "spread_phillips_relatif": 0.25,
+  "angle_grossmann_min_deg": 30.0,
+  "angle_grossmann_max_deg": 150.0,
+  "angle_phillips_min_deg": 60.0,
+  "angle_phillips_max_deg": 220.0
+}

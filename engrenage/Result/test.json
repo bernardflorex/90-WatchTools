@@ -1,0 +1,57 @@
+{
+  "format": "engcre",
+  "version": 1,
+  "roues": {
+    "menante": {
+      "mo": 0.135,
+      "zz": 89,
+      "nw": 20.0,
+      "qe": 1.1,
+      "qg": 0.2,
+      "ma": 1.0,
+      "me": 0.8,
+      "narcs": 3,
+      "hertz": {
+        "e_mod": 100000.0,
+        "poisson": 0.3,
+        "epaisseur": 0.3
+      }
+    },
+    "menee": {
+      "mo": 0.135,
+      "zz": 12,
+      "nw": 20.0,
+      "qe": 1.3,
+      "qg": 0.6,
+      "ma": 1.0,
+      "me": 1.0,
+      "narcs": 3,
+      "hertz": {
+        "e_mod": 200000.0,
+        "poisson": 0.3,
+        "epaisseur": 0.28
+      }
+    }
+  },
+  "simulation": {
+    "mu": 0.2,
+    "mt": 1.0,
+    "da": 0.0,
+    "da_neg": -30.0,
+    "da_pos": 30.0
+  },
+  "optimisation": {
+    "ponderation": 0.5,
+    "deplacement_um": 2.0,
+    "jeu_min_admis": 0.1,
+    "population": 40,
+    "generations": 30,
+    "graine": 1,
+    "principal": "couple",
+    "secondaire": "hertz",
+    "libres": {
+      "m": null,
+      "e": null
+    }
+  }
+}
