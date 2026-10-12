@@ -67,8 +67,11 @@ def ecrire_profil(chemin, mobile, n_dents=None, layer="PROFIL"):
     else:
         pm_d, ra_d = mobile.arcs_dos()
         pts_d = mobile.profil_dos()
-    pas = 2.0 * math.pi / mobile.zz
-    for i in range(n_dents or mobile.zz):
+    # pas et nombre de dents sur |Z| : pour une couronne, une dent se dessine d'un axe de creux
+    # à l'autre, et les dents ne se raccordent que dans ce sens (même règle que
+    # `evolvente.contour_dents`, où le pas signé faisait sauter le contour d'une dent à l'autre)
+    pas = 2.0 * math.pi / abs(mobile.zz)
+    for i in range(n_dents or abs(mobile.zz)):
         a = i * pas
         _ajouter_chaine_arcs(msp, pts, pm, ra, a, mirror=True, layer=layer)
         _ajouter_chaine_arcs(msp, pts_d, pm_d, ra_d, a, mirror=False, layer=layer)
@@ -93,8 +96,8 @@ def ecrire_polyligne(chemin, points, zz, n_dents=None, layer="PROFIL"):
     # point d'une dent et le premier de la suivante sont confondus sur l'axe du creux, donc le
     # contour se referme dent après dent
     dent = pts + [(-x, y) for x, y in reversed(pts)][1:]
-    pas = 2.0 * math.pi / zz
-    for i in range(n_dents or zz):
+    pas = 2.0 * math.pi / abs(zz)          # |Z| : couronne intérieure comme roue extérieure
+    for i in range(n_dents or abs(zz)):
         msp.add_lwpolyline([_rot(p, i * pas) for p in dent], dxfattribs={"layer": layer})
     doc.saveas(chemin)
 

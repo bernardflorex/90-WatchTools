@@ -39,6 +39,7 @@ class Roue:
 # = jeu du profil de départ à l'entraxe maximal ; `r_tete_min` : rayon minimal de l'arc de tête (mm,
 # 0 = pas de limite) ; `dissymetrie` : 1 = réparer les interférences par le demi-profil arrière.
 OPTIMISATION_DEFAUT = {"principal": "couple", "secondaire": "hertz", "ponderation": 0.5,
+                       "equilibre": 0,
                        "deplacement_um": 10.0, "jeu_min_admis": 0.1, "jeu_max_admis": 0.0,
                        "r_tete_min": 0.0, "population": 24, "evaluations": 12000, "departs": 6,
                        "graine": 1, "dissymetrie": 1, "libres": {"m": None, "e": None}}
@@ -271,13 +272,17 @@ def contour_dents(pts, zz, indices, angle0, centre, pts_dos=None):
 
 
 def entraxe_signe(roues, da=0.0):
-    """Entraxe signé rt1 + rt2, augmenté de `da` (mm) *en valeur absolue*.
+    """Entraxe signé rt1 + rt2 + `da` (mm) ; négatif avec une couronne intérieure (zz < 0), les
+    deux centres étant alors du même côté du point primitif.
 
-    Avec une couronne intérieure (zz < 0) la somme est négative -- les deux centres sont du même
-    côté du point primitif -- et l'entraxe réel est sa valeur absolue : `da > 0` doit donc
-    l'éloigner de zéro, pas s'ajouter algébriquement."""
-    a = sum(r.mo * r.zz / 2.0 for r in roues)
-    return a + math.copysign(da, a)
+    `da` s'ajoute algébriquement, et **c'est un écartement au sens du jeu, pas de la distance
+    entre axes** : `da > 0` desserre toujours la denture. Sur une denture extérieure les deux
+    coïncident (plus d'entraxe = plus de jeu) ; sur une couronne non, puisque éloigner le pignon
+    du centre de la couronne l'enfonce plus profond dans les dents et *réduit* le jeu -- avec
+    `da > 0` l'entraxe géométrique |rt1 + rt2| diminue donc. C'est la convention dont dépend tout
+    le reste : l'optimisation prend -dA comme le cas serré (contrainte `jeu_min`, anti-blocage) et
+    +dA comme le cas desserré (`jeu_max`)."""
+    return sum(r.mo * r.zz / 2.0 for r in roues) + da
 
 
 def rayons_fonctionnement(roues, da=0.0):
@@ -302,14 +307,20 @@ def _placement(roues, n_dents, angle1, angle2, da):
     """
     r1, r2 = rayons_fonctionnement(roues, da)
     r1_nom, r2_nom = (r.mo * r.zz / 2.0 for r in roues)
+    # Les dents de chaque roue doivent pointer vers le point primitif. La roue 1 est centrée en
+    # (0, -r1) : le point primitif est donc au-dessus d'elle si r1 > 0 (denture extérieure) et
+    # en dessous si r1 < 0 (couronne menante), auquel cas son repère est retourné d'un demi-tour
+    # -- le même `delta1` que `contact.Engrenement`, sans quoi on dessine les dents du côté opposé
+    # et la couronne n'engrène avec rien. Symétriquement pour la roue 2, centrée en (0, r2).
+    d1 = math.pi if roues[0].zz < 0 else 0.0
+    d2 = math.pi if roues[1].zz > 0 else 0.0
     if angle2 is None:
-        # roue 2 extérieure : centre au-dessus, dents vers le bas (180°) ; couronne intérieure :
-        # centre en dessous comme la roue 1, dents vers le haut (0°). Dans les deux cas décalée
-        # d'un demi-pas, pour qu'une dent de la roue 1 soit en face d'un creux de la roue 2.
-        angle2 = (math.pi if roues[1].zz > 0 else 0.0) - math.pi / roues[1].zz
+        # décalée d'un demi-pas, pour qu'une dent de la roue 1 soit en face d'un creux de la roue 2
+        angle2 = d2 - math.pi / abs(roues[1].zz)
     idx = range(-(n_dents // 2), n_dents - n_dents // 2)
     c1, c2 = (0.0, -r1), (0.0, r2)
-    return [(roues[0].zz, idx, angle1, c1), (roues[1].zz, idx, angle2, c2)], [(c1, r1_nom), (c2, r2_nom)]
+    return ([(roues[0].zz, idx, angle1 + d1, c1), (roues[1].zz, idx, angle2, c2)],
+            [(c1, r1_nom), (c2, r2_nom)])
 
 
 def points_dents(pts, zz, indices, angle0, centre):
@@ -461,7 +472,10 @@ def dessiner_engrenage(ax, roues, profils, n_dents=3, position=None, trajet=None
                     label="2e paire en prise", zorder=5)
         titre = "engrènement d'une paire de dents"
     else:
-        titre = f"{n_dents} dents par roue, roue menée décalée de 180° - 1/2 pas"
+        # la roue menée est décalée d'un demi-pas, depuis 180° si elle est extérieure et depuis 0°
+        # si c'est une couronne intérieure (son centre est alors du même côté que celui de la roue 1)
+        titre = (f"{n_dents} dents par roue, roue menée décalée de "
+                 f"{'180°' if roues[1].zz > 0 else '0°'} - 1/2 pas")
     ax.set_aspect("equal")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper right", fontsize="small")

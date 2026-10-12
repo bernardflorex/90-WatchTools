@@ -34,6 +34,55 @@ class ProfilArcs:
         return len(self.points)
 
 
+def _ecart_angle(a, b):
+    """a - b ramené dans (-pi, pi] : la cible peut être pi (couronne), où `krbgs` renvoie
+    indifféremment +pi ou -pi, et deux évaluations voisines peuvent tomber de part et d'autre."""
+    return (np.asarray(a) - b + math.pi) % (2 * math.pi) - math.pi
+
+
+def angle_depart(zz):
+    """Angle de la tangente au départ du demi-profil, dans la convention de `krbgs` (qui la prend
+    dans le sens opposé au parcours) : `-pi/|Z|`, aussi bien pour une denture extérieure que pour
+    une couronne intérieure -- la tangente de parcours vaut `pi - pi/|Z|` dans les deux cas."""
+    return -math.pi / abs(zz)
+
+
+def angle_fin(zz):
+    """Angle visé par la tangente à l'arrivée, sur l'axe de la dent : 0 pour une denture
+    extérieure, pi pour une couronne (le profil y arrive en descendant vers le centre)."""
+    return 0.0 if zz > 0 else math.pi
+
+
+SAGITTA_DROITE = 5e-5  # mm : en dessous, un arc est une droite et son signe ne veut rien dire
+
+
+def inversions(kr, ra, sagitta=SAGITTA_DROITE):
+    """Nombre de changements de signe des rayons, en ignorant les arcs rectilignes en pratique.
+
+    Un raccord de pied droit (`qg > 0`) sort de `krbgs` avec un rayon énorme dont le signe ne
+    tient qu'au bruit : le compter fait apparaître deux inversions fantômes et fait rejeter des
+    profils parfaits (mesuré sur une couronne Z=-150 : le meilleur ajustement, à 0.0009 µm,
+    était écarté au profit d'un autre à 1.6 µm). Un arc dont la flèche est sous `sagitta` est
+    donc sauté.
+    """
+    ra = np.asarray(ra, dtype=float)
+    kr = np.asarray(kr, dtype=float)
+    demi = np.hypot(*(kr[1:] - kr[:-1]).T) / 2.0
+    r = np.abs(ra)
+    fleche = r - np.sqrt(np.maximum(r * r - demi * demi, 0.0))
+    s = np.sign(ra[fleche >= sagitta])
+    return int(np.count_nonzero(np.diff(s))) if len(s) > 1 else 0
+
+
+def convexite(zz, ra):
+    """Rayons signés ramenés à la convexité *physique* (positif = matière du côté du centre de
+    l'arc). `krbgs` les donne relativement au sens de parcours ; pour une couronne, dont la
+    matière est à l'extérieur, c'est l'opposé. Multiplier par un signe ne change pas le nombre
+    d'inversions, donc le contrôle SWTE (une seule inversion) reste valable tel quel -- et un
+    flanc actif de couronne, concave, y est légitime."""
+    return ra if zz > 0 else -ra
+
+
 def krbgs(a1, kr):
     """Arcs tangents passant par les points `kr`, pour l'angle a1 de la tangente au départ.
 
@@ -179,8 +228,8 @@ def lagrmo(aw, xy, kp):
         mt, bs = np.zeros((mn, mn)), np.zeros(mn)
         bs[:mn - 1] = (fm - fp) / (2 * dt)
         mt[lig, lig] = rx * (fm + fp - 2 * f0) / (dt * dt)
-        mt[lig, mn - 1] = mt[mn - 1, lig] = (am - ap) / (2 * dt)
-        bs[mn - 1] = a0 - aw[1]
+        mt[lig, mn - 1] = mt[mn - 1, lig] = _ecart_angle(am, ap) / (2 * dt)
+        bs[mn - 1] = _ecart_angle(a0, aw[1])
         try:
             dx = np.linalg.solve(mt, bs)
         except np.linalg.LinAlgError:
@@ -193,7 +242,7 @@ def lagrmo(aw, xy, kp):
         if mr1 > meilleur[0]:  # l'écart maximal remonte : on garde le meilleur
             break
         gain = meilleur[0] - mr1
-        meilleur = (mr1, mr2, aw[1] - a0)
+        meilleur = (mr1, mr2, -_ecart_angle(a0, aw[1]))
         kp[:] = kr
         if gain < GAIN_MINI * mr1:  # la descente ne rapporte plus rien
             break
@@ -222,26 +271,28 @@ def rayon_flanc(points, zz):
     une fraise de taillage ne l'y reproduit pas (elle y creuse sa propre trochoïde). 0 s'il n'y a
     pas d'arc concave."""
     pts = np.asarray(points, dtype=float)
-    ra = krbgs(-math.pi / zz, pts)[1]
+    ra = convexite(zz, krbgs(angle_depart(zz), pts)[1])
     negatifs = np.flatnonzero(ra < 0.0)
     return 0.0 if len(negatifs) == 0 else float(np.hypot(*pts[negatifs[-1] + 1]))
 
 
-def _ajuster_points(xy, a1, kr, utile=None):
+def _ajuster_points(xy, aw, kr, utile=None):
     """Ajuste (LAGRMO) la chaîne d'arcs passant par les points de transition `kr` (les deux
-    extrémités restent fixes) et retourne (clé de comparaison, ProfilArcs, écart max par arc)."""
-    ecart, indice, erreur = lagrmo((a1, 0.0), xy, kr)
+    extrémités restent fixes) et retourne (clé de comparaison, ProfilArcs, écart max par arc).
+    `aw` : (tangente au départ, tangente visée à l'arrivée)."""
+    a1 = aw[0]
+    ecart, indice, erreur = lagrmo(aw, xy, kr)
     pm, ra, _ = krbgs(a1, kr)
     ec, affect = _distances(xy, kr, pm, ra)
     d = ec[affect, np.arange(len(xy))]
     par_arc = np.zeros(len(pm))
     np.maximum.at(par_arc, affect, d)
     flanc = float(d[utile].max()) if utile is not None else None
-    inversions = int(np.count_nonzero(np.diff(np.sign(ra))))
-    return (max(0, inversions - 1), ecart), ProfilArcs(kr, pm, ra, ecart, indice, erreur, flanc), par_arc
+    return (max(0, inversions(kr, ra) - 1), ecart), \
+        ProfilArcs(kr, pm, ra, ecart, indice, erreur, flanc), par_arc
 
 
-def _ajuster(xy, a1, idx, utile=None):
+def _ajuster(xy, aw, idx, utile=None):
     """Ajuste la chaîne d'arcs découpée aux indices intérieurs `idx` du profil.
 
     La clé classe d'abord par nombre d'inversions de signe des rayons au-delà d'une seule : un
@@ -250,7 +301,7 @@ def _ajuster(xy, a1, idx, utile=None):
     actif) ne sert qu'à renseigner `ecart_flanc` : classer là-dessus a été essayé et dégrade le
     résultat quand le nombre d'arcs demandé n'est pas celui de la référence.
     """
-    return _ajuster_points(xy, a1, xy[np.concatenate(([0], idx, [len(xy) - 1]))].copy(), utile)
+    return _ajuster_points(xy, aw, xy[np.concatenate(([0], idx, [len(xy) - 1]))].copy(), utile)
 
 
 def _redistribuer(par_arc, s, idx, n_max):
@@ -302,7 +353,8 @@ def approximer(profil, zz, qg, narcs, reference=None):
     ni = len(xy)
     m = 1 if qg > 0 else 0  # raccord rectiligne de pied
     n_arcs = narcs + 2 + m
-    a1 = -math.pi / zz  # angle de la tangente au départ (celle de la fin est 0 : axe de la dent)
+    aw = (angle_depart(zz), angle_fin(zz))  # tangentes au départ et sur l'axe de la dent
+    zz = abs(zz)  # à partir d'ici seul le pas compte, le sens est passé par `aw`
     s, theta = _mesures(xy)
     nk2 = ni // 10
     nk1 = nk2 - 2 * m
@@ -321,7 +373,7 @@ def approximer(profil, zz, qg, narcs, reference=None):
             # (une tête, un congé) tombe sinon entre deux indices voisins, l'arc n'est plus
             # contraint que par un point et LAGRMO lui donne n'importe quelle courbure
             cle, profil_arcs, _ = _ajuster_points(
-                xy, a1, np.vstack((xy[0], ref[1:-1], xy[-1])).copy(), utile)
+                xy, aw, np.vstack((xy[0], ref[1:-1], xy[-1])).copy(), utile)
             # on garde cet ajustement tel quel s'il est exploitable, sans le mettre en
             # concurrence : aucun écart scalaire ne permet de choisir à sa place (essayé, sur
             # l'écart maximal comme sur celui du flanc actif ; les deux retiennent
@@ -342,7 +394,7 @@ def approximer(profil, zz, qg, narcs, reference=None):
             # on poursuit la série même quand un redécoupage est moins bon : la suite du chemin
             # retombe souvent bien plus bas (s'arrêter à la première remontée coûte, mesuré sur
             # validation.json, 5 µm au lieu de 1 µm)
-            cle, profil_arcs, par_arc = _ajuster(xy, a1, idx, utile)
+            cle, profil_arcs, par_arc = _ajuster(xy, aw, idx, utile)
             if meilleur is None or cle < meilleur[0]:
                 meilleur = (cle, profil_arcs)
             suivant = _redistribuer(par_arc, s, idx, ni - 2)
@@ -475,7 +527,7 @@ class Mobile:
 
     def arcs(self):
         """(centres, rayons signés) des arcs tangents passant par les points."""
-        pm, ra, _ = krbgs(-math.pi / self.zz, np.asarray(self.points, dtype=float))
+        pm, ra, _ = krbgs(angle_depart(self.zz), np.asarray(self.points, dtype=float))
         return pm, ra
 
     def echantillonner(self, n_total=400):
@@ -490,7 +542,7 @@ class Mobile:
         return self.points if self.points_dos is None else self.points_dos
 
     def arcs_dos(self):
-        pm, ra, _ = krbgs(-math.pi / self.zz, np.asarray(self.profil_dos(), dtype=float))
+        pm, ra, _ = krbgs(angle_depart(self.zz), np.asarray(self.profil_dos(), dtype=float))
         return pm, ra
 
     def echantillonner_dos(self, n_total=400):

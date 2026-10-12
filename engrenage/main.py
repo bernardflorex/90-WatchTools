@@ -17,6 +17,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
+import numpy as np
+
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtCore import QLocale, Qt, QThread, Signal
@@ -55,6 +57,11 @@ import evolvente
 RACINE = Path(__file__).resolve().parent
 FICHIER_DEFAUT = RACINE / "test.Cev"
 NI = 150  # points par demi-dent
+SIGMA_DEFAUT = 20.0  # angle de croisement par défaut (degrés) : valeur courante en skiving
+MSG_SCARVING = (
+    "Le fichier .Frs est le format Fortran de la fraise-mère (crémaillère) : il n'a pas de place "
+    "pour le nombre de dents d'un outil de scarving. Enregistrez plutôt le profil taillé "
+    "(.Eno / .dxf), ou repassez l'outil concerné à Z outil = 0.")
 MSG_ARCS_REQUIS = (
     "Le profil courant est une suite de points (roues taillées). Reconvertissez-le en arcs de "
     "cercle dans l'onglet Fraise (groupe « reconvertir en arcs »).")
@@ -72,13 +79,15 @@ class Champ:
     mini: float
     maxi: float
     entier: bool = False
+    exclus: tuple = None  # (bas, haut) : intervalle interdit à l'intérieur de [mini, maxi]
 
 
 # Une ligne du panneau par champ : pour ajouter une variable de roue, ajouter un Champ ici
 # (et l'attribut correspondant dans evolvente.Roue).
 CHAMPS = (
     Champ("mo", "MO", "Module (mm)", 0.001, 1000),
-    Champ("zz", "ZZ", "Nombre de dents", 3, 10000, entier=True),
+    Champ("zz", "ZZ", "Nombre de dents (négatif = couronne intérieure)", -10000, 10000,
+          entier=True, exclus=(-2, 2)),
     Champ("nw", "NW", "Angle de pression (°)", 1, 60),
     Champ("qe", "QE", "Rapport creux / plein au diamètre primitif", 0.1, 10),
     Champ("qg", "QG", "Raccord de pied (x module), 0 = aucun", 0, 5),
@@ -268,7 +277,9 @@ class Fenetre(QMainWindow):
         self.sim_profils_dos = None  # demi-profils arrière échantillonnés (dents dissymétriques) ou None
         self.da_mm, self.mt = 0.0, 1.0
         # onglet Fraise
-        self.fraise_paire = None  # (fraise menante, fraise menée) : fraise.ProfilFraise
+        self.fraise_paire = None  # (outil menante, outil menée) : ProfilFraise (crémaillère) ou ProfilOutil
+        self.z_outils = [0, 0]  # nombre de dents de l'outil par roue (0 = fraise-mère)
+        self.sigmas = [0.0, 0.0]  # angle de croisement des axes par roue (rad)
         self.fraise_source = None  # (menant, mené) : arcs.Mobile qui ont servi à les calculer, ou None
         self.taillage = [None, None]  # par roue : {"zp", "ecart", "zz", "oy"} ou None
         self._vue_ok = False  # la vue du graphique a été fixée (zoom de l'utilisateur conservé)
@@ -523,6 +534,17 @@ class Fenetre(QMainWindow):
         grille.addWidget(self.combo_secondaire, 1, 1)
         grille.setColumnStretch(0, 1)
         self._ajouter_champs(grille, CHAMPS_OPTI[:1], 2)
+        # Troisième terme, facultatif, de l'objectif : l'équilibre de la menée de part et d'autre
+        # de la ligne des centres. Sans lui l'optimisation va volontiers vers beaucoup de menée
+        # après et peu avant, ce qui n'est pas toujours voulu -- d'où la case plutôt qu'un terme
+        # imposé.
+        self.case_equilibre = QCheckBox("Équilibrer la menée avant / après la ligne des centres")
+        self.case_equilibre.setToolTip(
+            "Ajoute à l'objectif l'écart entre les deux étendues de la menée de part et d'autre du "
+            "point primitif. Coché, l'optimisation cherche à les égaliser ; décoché, elle les "
+            "laisse libres et donne souvent beaucoup plus de menée après la ligne des centres.")
+        self.case_equilibre.stateChanged.connect(lambda _s: self._marquer_modifie())
+        grille.addWidget(self.case_equilibre, 3, 0, 1, 2)
         lay.addWidget(obj)
 
         contr = QGroupBox("Contraintes (une solution qui les viole n'est pas valable)")
@@ -582,8 +604,9 @@ class Fenetre(QMainWindow):
 
         res = QGroupBox("Optima trouvés")
         lay_res = QVBoxLayout(res)
-        self.table_opti = QTableWidget(0, 6)
-        self.table_opti.setHorizontalHeaderLabels(["J", "Couple %", "Hertz", "Jeu °", "Dents", "État"])
+        self.table_opti = QTableWidget(0, 7)
+        self.table_opti.setHorizontalHeaderLabels(
+            ["J", "Couple %", "Hertz", "Jeu °", "Équilibre", "Dents", "État"])
         self.table_opti.setSelectionBehavior(QTableWidget.SelectRows)
         self.table_opti.setSelectionMode(QTableWidget.SingleSelection)
         self.table_opti.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -639,22 +662,51 @@ class Fenetre(QMainWindow):
                 self.edits_fraise[c.cle] = le
                 grille.addWidget(le, i, 1)
 
-        creer = QGroupBox("Créer une fraise (roulement sans glissement roue / crémaillère)")
+        creer = QGroupBox("Créer l'outil (roulement sans glissement roue / outil)")
         lay_creer = QVBoxLayout(creer)
-        lay_creer.addWidget(_etiq("Le profil de la fraise ne change pas la forme de la dent : c'est "
-                                  "le profil conjugué exact, dans le repère de la droite primitive."))
+        lay_creer.addWidget(_etiq("Le profil de l'outil ne change pas la forme de la dent : c'est le "
+                                  "profil conjugué exact, dans le repère de l'outil."))
         ligne = QHBoxLayout()
-        ligne.addWidget(QLabel("Roue :"))
+        ligne.addWidget(QLabel("Roue affichée :"))
         self.combo_fraise_roue = QComboBox()
         self.combo_fraise_roue.addItems(ROUES)
         self.combo_fraise_roue.currentIndexChanged.connect(self._roue_fraise_changee)
         ligne.addWidget(self.combo_fraise_roue)
         ligne.addStretch(1)
         lay_creer.addLayout(ligne)
+        # Outil par roue : une couronne ne peut être taillée que par un outil qui passe dans son
+        # ouverture, donc par scarving ; un pignon se taille à la fraise-mère. 0 = crémaillère.
+        lay_creer.addWidget(_etiq("Outil par roue : nombre de dents de l'outil de scarving, "
+                                  "<b>0 = fraise-mère</b> (crémaillère). Une couronne intérieure "
+                                  "exige un outil (Z ≥ 3) qui passe dans son ouverture. Σ est "
+                                  "l'angle de croisement des axes : c'est lui qui donne la vitesse "
+                                  "de coupe, <b>Σ = 0 ne coupe pas</b> (c'est du mortaisage)."))
+        self.edits_z_fraise, self.edits_sigma = [], []
+        for champ, liste, defaut, info in (
+                ("Z outil", self.edits_z_fraise, "0",
+                 "0 : fraise-mère (crémaillère). Sinon nombre de dents de l'outil de scarving."),
+                ("Σ (°)", self.edits_sigma, f"{SIGMA_DEFAUT:g}",
+                 "Angle de croisement des axes, en degrés. 0 = axes parallèles (mortaisage).")):
+            ligne_o = QHBoxLayout()
+            ligne_o.addWidget(QLabel(f"{champ} :"))
+            for k in range(2):
+                ligne_o.addWidget(QLabel(ROUES[k]))
+                le = QLineEdit(defaut)
+                le.setMaximumWidth(70)
+                le.setAlignment(Qt.AlignRight)
+                le.setToolTip(info)
+                if liste is self.edits_z_fraise:
+                    le.setValidator(QIntValidator(0, 9999, le))
+                else:
+                    le.setValidator(QDoubleValidator(0.0, 60.0, 2, le))
+                liste.append(le)
+                ligne_o.addWidget(le)
+            ligne_o.addStretch(1)
+            lay_creer.addLayout(ligne_o)
         sous = QGroupBox()
         champs(sous, CHAMPS_FRAISE_CREATION)
         lay_creer.addWidget(sous)
-        b_calc = QPushButton("Calculer la fraise")
+        b_calc = QPushButton("Calculer les outils")
         b_calc.clicked.connect(self.calculer_fraise)
         lay_creer.addWidget(b_calc)
         self.info_fraise = QLabel("-")
@@ -761,8 +813,17 @@ class Fenetre(QMainWindow):
         self.edits_fraise["n_arcs_taillage"].setText(str(max(1, len(self.fraise_source[w].points) - 3)))
 
     def _texte_taillage(self, w, t):
-        texte = (f"Roue taillée ({ROUES[w].lower()}) : Z=<b>{t['zz']}</b>, module effectif "
-                f"<b>{self.fraise_paire[w].module + 2 * t['oy'] / t['zz']:.6f} mm</b> "
+        # Avec une fraise-mère, éloigner la crémaillère revient à changer le module engendré
+        # (`module + 2*oy/zz`, le choix O/M de `Fraesen.F90`). Avec un outil de scarving le module
+        # est fixé par les deux nombres de dents : `oy` n'est plus qu'un déport de denture, à
+        # annoncer comme tel.
+        if self.z_outils[w] == 0:
+            quoi = (f"module effectif <b>"
+                    f"{self.fraise_paire[w].module + 2 * t['oy'] / t['zz']:.6f} mm</b>")
+        else:
+            quoi = (f"module <b>{self.fraise_paire[w].module:g} mm</b>, déport "
+                    f"<b>{t['oy'] * 1e3:.1f} µm</b>")
+        texte = (f"Roue taillée ({ROUES[w].lower()}) : Z=<b>{t['zz']}</b>, {quoi} "
                 f"({len(t['zp'])} points).<br>")
         if t["ecart"]:
             exc, _, pen, _ = t["ecart"]
@@ -773,46 +834,109 @@ class Fenetre(QMainWindow):
                      "roue d'origine de la fraise).</i>")
         return texte
 
+    def _sigmas(self):
+        """Angle de croisement par roue, en radians ; ValueError si incohérent.
+
+        C'est l'angle entre l'axe de l'outil et celui de la pièce. Sans lui il n'y a pas de
+        vitesse de coupe : un outil à axes parallèles ne fait que du mortaisage. Il n'a aucun sens
+        pour une fraise-mère, où il est simplement ignoré."""
+        out = []
+        for k, le in enumerate(self.edits_sigma):
+            texte = (le.text() or "0").replace(",", ".")
+            try:
+                v = float(texte)
+            except ValueError:
+                raise ValueError(f"Σ ({ROUES[k].lower()}) : nombre de degrés attendu")
+            if not 0.0 <= v <= 60.0:
+                raise ValueError(f"Σ ({ROUES[k].lower()}) : entre 0 et 60 degrés")
+            out.append(math.radians(v))
+        return out
+
+    def _z_outils(self):
+        """Nombre de dents de l'outil par roue (0 = fraise-mère) ; ValueError si incohérent."""
+        zs = []
+        for k, le in enumerate(self.edits_z_fraise):
+            if not le.hasAcceptableInput():
+                raise ValueError(f"Z outil ({ROUES[k].lower()}) : entier entre 0 et 9999 attendu")
+            z = int(le.text() or 0)
+            if z != 0 and z < 3:
+                raise ValueError(f"Z outil ({ROUES[k].lower()}) : 0 (fraise-mère) ou au moins 3")
+            if self.mobiles is not None and self.mobiles[k].zz < 0 and z == 0:
+                raise ValueError(f"{ROUES[k]} est une couronne intérieure : une fraise-mère ne peut "
+                                 "pas y entrer, donnez un nombre de dents d'outil de scarving")
+            if (self.mobiles is not None and self.mobiles[k].zz < 0
+                    and z >= abs(self.mobiles[k].zz)):
+                raise ValueError(f"Z outil ({ROUES[k].lower()}) : l'outil doit être plus petit que "
+                                 f"la couronne (Z < {abs(self.mobiles[k].zz)}) pour y entrer")
+            zs.append(z)
+        return zs
+
     def calculer_fraise(self):
-        """Calcule les fraises conjuguées des deux roues (onglet Simulation), comme le Fortran
-        (ENGOPT, option "F") qui traite toujours la paire pour pouvoir enregistrer les deux."""
+        """Calcule l'outil conjugué de chaque roue de l'onglet Simulation : fraise-mère
+        (crémaillère, `Z outil = 0`) ou outil de scarving. Les deux roues sont traitées ensemble,
+        comme le Fortran (ENGOPT, option "F"), pour pouvoir enregistrer la paire."""
         if self.mobiles is None:
-            QMessageBox.information(self, "Fraise", "Ouvrez ou simulez d'abord un profil en arcs "
+            QMessageBox.information(self, "Outil", "Ouvrez ou simulez d'abord un profil en arcs "
                                     "de cercle (onglet Simulation).")
             return
-        v, erreur = self._lire(self.edits_fraise, CHAMPS_FRAISE_CREATION, "fraise")
-        if erreur:
-            self.info_fraise.setText(f"<span style='color:#c62828'>{erreur}</span>")
+        try:
+            z_outils = self._z_outils()
+            sigmas = self._sigmas()
+            v, erreur = self._lire(self.edits_fraise, CHAMPS_FRAISE_CREATION, "fraise")
+            if erreur:
+                raise ValueError(erreur)
+        except ValueError as e:
+            self.info_fraise.setText(f"<span style='color:#c62828'>{e}</span>")
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             import fraise as fraise_mod
-            paire = tuple(fraise_mod.profil_fraise(
-                mobile, n_periodes=int(v["n_periodes"]) or None, n_positions=int(v["n_positions"]),
-                pc=v["pc"], n_points=int(v["n_points"])) for mobile in self.mobiles)
-        except (ValueError, ArithmeticError) as e:
+            paire = tuple(
+                fraise_mod.profil_fraise(m, n_periodes=int(v["n_periodes"]) or None,
+                                         n_positions=int(v["n_positions"]), pc=v["pc"],
+                                         n_points=int(v["n_points"]))
+                if z == 0 else
+                fraise_mod.profil_outil(m, z, sg, n_points=int(v["n_points"]))
+                for m, z, sg in zip(self.mobiles, z_outils, sigmas))
+        except (ValueError, ArithmeticError, NotImplementedError) as e:
             self.info_fraise.setText(f"<span style='color:#c62828'>{type(e).__name__} : {e}</span>")
             return
         finally:
             QApplication.restoreOverrideCursor()
         self.fraise_paire, self.fraise_source = paire, self.mobiles
+        self.z_outils, self.sigmas = z_outils, sigmas
         self.taillage = [None, None]
         self.info_taillage.setText("-")
         w = self.combo_fraise_roue.currentIndex()
         self.edits_fraise["zz_cible"].setText(str(self.mobiles[w].zz))
         self._proposer_n_arcs(w)
-        periodes = [int(v["n_periodes"]) or fraise_mod.periodes_defaut(m.zz) for m in self.mobiles]
-        self.info_fraise.setText(
-            f"Fraises calculées : <b>{self.mobiles[0].nom}</b> (Z={self.mobiles[0].zz}, module "
-            f"{paire[0].module:g} mm, {periodes[0]} périodes) et <b>{self.mobiles[1].nom}</b> "
-            f"(Z={self.mobiles[1].zz}, module {paire[1].module:g} mm, {periodes[1]} périodes), "
-            f"{len(paire[0].points)} points chacune.")
+        detail = []
+        for m, z, o in zip(self.mobiles, z_outils, paire):
+            if z == 0:
+                detail.append(f"<b>{m.nom}</b> (Z={m.zz}) : fraise-mère, module {o.module:g} mm")
+            else:
+                taux = fraise_mod.derive_affutage(m, o.zz, o.sigma)
+                detail.append(
+                    f"<b>{m.nom}</b> (Z={m.zz}) : outil de scarving Z={o.zz}, Σ="
+                    f"{math.degrees(o.sigma):g}°, rayon primitif {o.rayon:.4f} mm, module apparent "
+                    f"{o.module_apparent:.6f} mm, hélice {math.degrees(o.sigma):g}°"
+                    + (" — <i>dent pointue</i>." if o.tronque else
+                       " — pas de tête imposée par la pièce.")
+                    + ("" if not o.sigma else
+                       f" Dérive au réaffûtage : <b>{taux * 1e3 / 0.05:.1f} µm/mm</b>.")
+                    + ("<br><span style='color:#c62828'>Σ = 0 : axes parallèles, l'outil ne coupe "
+                       "pas (mortaisage).</span>" if not o.sigma else ""))
+        self.info_fraise.setText("Outils calculés :<br>" + "<br>".join(detail)
+                                 + f"<br>{len(paire[0].points)} points chacun.")
         self._dessiner_fraise()
         self._aller_onglet(3)
 
     def sauver_fraise(self):
         if self.fraise_paire is None:
-            QMessageBox.information(self, "Fraise", "Calculez d'abord une fraise.")
+            QMessageBox.information(self, "Fraise", "Calculez d'abord un outil.")
+            return
+        if any(z != 0 for z in self.z_outils):
+            QMessageBox.information(self, "Fraise", MSG_SCARVING)
             return
         ref = self.chemin or self.source
         proposition = ref.with_name(f"{ref.stem}.Frs") if ref else RACINE / "Files" / "fraise.Frs"
@@ -861,9 +985,13 @@ class Fenetre(QMainWindow):
         """Taille la roue `w`, remplit `self.taillage[w]` ; retourne une erreur (str) ou None."""
         import fraise as fraise_mod
         f = self.fraise_paire[w]
+        # fraise-mère : roulement contre une droite (`tailler`) ; outil de scarving : roulement
+        # contre une roue (`tailler_outil`). `oy` a le même sens dans les deux cas, un déport de
+        # denture, et le même signe (outil éloigné de la pièce).
+        tailleur = fraise_mod.tailler if self.z_outils[w] == 0 else fraise_mod.tailler_outil
         try:
-            zp = fraise_mod.tailler(f, zz, oy=oy, n_periodes=n_periodes, n_positions=n_positions,
-                                    n_points=n_points)
+            zp = tailleur(f, zz, oy=oy, n_periodes=n_periodes, n_positions=n_positions,
+                          n_points=n_points)
         except (ValueError, ArithmeticError) as e:
             return f"{type(e).__name__} : {e}"
         ecart = None
@@ -950,8 +1078,19 @@ class Fenetre(QMainWindow):
         etats = self._charger_taillage()
         details = "; ".join(f"{ROUES[w].lower()} {_texte_ecart_arcs(p)}"
                             for w, p in enumerate(ecarts) if p is not None)
+        # Rien ne garantit qu'un profil taillé soit approximable à un nombre d'arcs donné : la
+        # chaîne peut revenir sur elle-même et être refusée par SWTE. Sans ce contrôle, l'échec
+        # ne se voyait qu'en aval, par un refus de la simulation (mesuré sur une couronne taillée
+        # au scarving, invalide à 5 arcs mais correcte à 4 et à 6).
+        import optim as optim_mod
+        mauvaises = [ROUES[w].lower() for w, (m, e) in enumerate(zip(mobiles, ecarts))
+                     if e is not None and not optim_mod.profil_valide(m)]
         self._message(f"Profil courant = roues taillées en arcs ({', '.join(etats)})." +
-                      (f" Écart d'approximation en arcs : {details}." if details else ""))
+                      (f" Écart d'approximation en arcs : {details}." if details else "") +
+                      (f" ATTENTION : l'approximation à {n_arcs} arcs de la {' et de la '.join(mauvaises)}"
+                       " se replie sur elle-même (contrôle SWTE) ; essayez un autre nombre d'arcs,"
+                       " ou simulez la suite de points." if mauvaises else ""),
+                      erreur=bool(mauvaises))
 
     def utiliser_taillage_points(self):
         """Charge les roues taillées telles quelles, en suite de points : c'est la forme que la
@@ -1048,17 +1187,30 @@ class Fenetre(QMainWindow):
                             label=f"pénétration max {abs(pen) * 1e3:.2f} µm")
             self.ax.set_title(f"Roue taillée par génération ({ROUES[w].lower()})")
         elif self.fraise_paire is not None:
-            f = self.fraise_paire[self.combo_fraise_roue.currentIndex()]
-            pas = f.pc * math.pi * f.module
-            pts = f.points.tolist()
-            gauche = [(-x, y) for x, y in reversed(pts)]
-            dent = pts + gauche[1:]
-            for k in (-1, 0, 1):
-                xs = [x + k * pas for x, y in dent]
-                ys = [y for _, y in dent]
-                self.ax.plot(xs, ys, color="tab:green", lw=1.4, label="fraise" if k == 0 else None)
-            self.ax.axhline(0.0, color="k", lw=0.8, ls="--", label="droite primitive")
-            self.ax.set_title(f"Fraise ({f.nom}, module {f.module:g} mm)")
+            f = self.fraise_paire[w]
+            pts = np.asarray(f.points, dtype=float)
+            if self.z_outils[w] == 0:  # fraise-mère : profil rectiligne, répété le long du pas
+                pas = f.pc * math.pi * f.module
+                dent = pts.tolist() + [(-x, y) for x, y in reversed(pts.tolist())][1:]
+                for k in (-1, 0, 1):
+                    self.ax.plot([x + k * pas for x, _ in dent], [y for _, y in dent],
+                                 color="tab:green", lw=1.4, label="fraise-mère" if k == 0 else None)
+                self.ax.axhline(0.0, color="k", lw=0.8, ls="--", label="droite primitive")
+                self.ax.set_title(f"Fraise-mère ({f.nom}, module {f.module:g} mm)")
+            else:  # outil de scarving : une roue, on dessine quelques flancs conjugués
+                pas = 2.0 * math.pi / f.zz
+                for k in (-2, -1, 0, 1, 2):
+                    for s in (1.0, -1.0):
+                        q = np.column_stack((s * pts[:, 0], pts[:, 1]))
+                        c, si = math.cos(k * pas), math.sin(k * pas)
+                        self.ax.plot(q[:, 0] * c - q[:, 1] * si, q[:, 0] * si + q[:, 1] * c,
+                                     color="tab:green", lw=1.4,
+                                     label="flanc actif de l'outil" if (k == 0 and s > 0) else None)
+                th = np.linspace(0.0, 2.0 * math.pi, 400)
+                self.ax.plot(f.rayon * np.cos(th), f.rayon * np.sin(th), "--", color="k", lw=0.8,
+                             label="primitif de l'outil")
+                self.ax.set_title(f"Outil de scarving ({f.nom}, Z={f.zz}, "
+                                  f"rayon primitif {f.rayon:g} mm)")
         else:
             self.ax.set_title("Aucune fraise calculée")
         self.ax.set_aspect("equal")
@@ -1207,8 +1359,14 @@ class Fenetre(QMainWindow):
                 le.setStyleSheet(STYLE_ERREUR)
                 erreur = erreur or f"{c.nom} ({nom_de}) : valeur entre {c.mini:g} et {c.maxi:g} attendue"
                 continue
+            v = int(le.text()) if c.entier else float(le.text())
+            if c.exclus is not None and c.exclus[0] <= v <= c.exclus[1]:
+                le.setStyleSheet(STYLE_ERREUR)
+                erreur = erreur or (f"{c.nom} ({nom_de}) : valeur entre {c.mini:g} et {c.maxi:g} "
+                                    f"attendue, hors de [{c.exclus[0]:g}, {c.exclus[1]:g}]")
+                continue
             le.setStyleSheet("")
-            valeurs[c.cle] = int(le.text()) if c.entier else float(le.text())
+            valeurs[c.cle] = v
         return valeurs, erreur
 
     def lire_roues(self):
@@ -1238,6 +1396,7 @@ class Fenetre(QMainWindow):
         opti["principal"] = self.combo_principal.currentData()
         opti["secondaire"] = self.combo_secondaire.currentData()
         opti["dissymetrie"] = int(self.case_dissym.isChecked())
+        opti["equilibre"] = int(self.case_equilibre.isChecked())
         opti["libres"] = {}
         for role, liste in zip("me", self.liste_points):
             coches = [liste.item(i).data(Qt.UserRole) for i in range(liste.count())
@@ -1251,9 +1410,14 @@ class Fenetre(QMainWindow):
             combo.blockSignals(True)
             combo.setCurrentIndex(max(0, combo.findData(opti[cle])))
             combo.blockSignals(False)
-        self.case_dissym.blockSignals(True)
-        self.case_dissym.setChecked(bool(opti.get("dissymetrie", 1)))
-        self.case_dissym.blockSignals(False)
+        # `blockSignals` obligatoire : sans lui `stateChanged` marque le projet modifié à chaque
+        # remplissage programmé (ouverture, rechargement), et l'application réclame une sauvegarde
+        # alors que l'utilisateur n'a rien touché -- le bug déjà rencontré sur les deux combos.
+        for case, cle, defaut in ((self.case_dissym, "dissymetrie", 1),
+                                  (self.case_equilibre, "equilibre", 0)):
+            case.blockSignals(True)
+            case.setChecked(bool(opti.get(cle, defaut)))
+            case.blockSignals(False)
         for c in CHAMPS_OPTI:
             le = self.edits_opti[c.cle]
             le.setText(str(int(opti[c.cle])) if c.entier else texte_nombre(opti[c.cle]))
@@ -1266,7 +1430,9 @@ class Fenetre(QMainWindow):
             liste.clear()
         for role, liste, mobile in zip("me", self.liste_points, self.mobiles or ()):
             liste.blockSignals(True)
+            # convexité physique : elle est inversée sur une couronne intérieure
             _, rayons = mobile.arcs()
+            rayons = arcs.convexite(mobile.zz, rayons)
             for i in range(len(rayons) - 1):
                 r = rayons[i]
                 item = QListWidgetItem(f"Arc {i + 1} : rayon {r:+.4f} mm ({'convexe' if r > 0 else 'concave'})")
@@ -1295,7 +1461,9 @@ class Fenetre(QMainWindow):
             liste.clear()
         for liste, mobile in zip(self.liste_arcs_sim, self.mobiles or ()):
             liste.blockSignals(True)
+            # convexité physique : elle est inversée sur une couronne intérieure
             _, rayons = mobile.arcs()
+            rayons = arcs.convexite(mobile.zz, rayons)
             for i, r in enumerate(rayons):
                 liste.addItem(f"Arc {i + 1} : rayon {r:+.4f} mm ({'convexe' if r > 0 else 'concave'})")
             liste.blockSignals(False)
@@ -1405,6 +1573,7 @@ class Fenetre(QMainWindow):
             self.info_opti.setText("<span style='color:#c62828'>Aucun arc libre.</span>")
             return None
         objectif = optim.Objectif(opti["principal"], opti["secondaire"] or None, opti["ponderation"],
+                                  equilibre=bool(opti.get("equilibre", 0)),
                                   jeu_min=opti["jeu_min_admis"], jeu_max=opti["jeu_max_admis"] or "auto",
                                   r_tete_min=opti["r_tete_min"])
         options = recherche.Options(departs=opti["departs"], population=opti["population"],
@@ -1450,7 +1619,9 @@ class Fenetre(QMainWindow):
             f"<tr><td>ΔA {r['da_um']:+.0f} µm</td><td align=right>{r['couple_var']:.2f} %</td>"
             f"<td align=right>{r['hertz']:.0f}</td><td align=right>{r['rendement']:.2f} %</td>"
             + (f"<td align=right>{r['jeu_min']:.2f}–{r['jeu_max']:.2f}°</td>" if r["jeu_min"] == r["jeu_min"] else "<td></td>")
-            + f"<td align=right>{r['interference_um']:.1f} µm</td></tr>" for r in rapport)
+            + f"<td align=right>{r['interference_um']:.1f} µm</td>"
+            f"<td align=right>{r['menee_avant']:.3f} / {r['menee_apres']:.3f}</td>"
+            f"<td align=right>{100 * r['symetrie']:.0f} %</td></tr>" for r in rapport)
         libelles = {k: recherche_lib for k, recherche_lib in (
             ("jeu_min", "jeu insuffisant"), ("jeu_max", "jeu excessif"), ("r_tete", "rayon de tête trop petit"),
             ("interference", "interférence"), ("ecart_tete", "têtes différentes"))}
@@ -1459,10 +1630,14 @@ class Fenetre(QMainWindow):
         total = options.departs * options.evaluations * 1.2
         self.info_opti.setText(
             "<table cellspacing=4><tr><th></th><th>Couple</th><th>Hertz</th><th>Rendement</th><th>Jeu</th>"
-            f"<th>Interférence</th></tr>{lignes}</table>"
+            "<th>Interférence</th><th>Menée av./ap.</th><th>Équilibre</th></tr>"
+            f"{lignes}</table>"
             f"Rayon d'arc de tête minimal : <b>{rapport[0]['r_tete']:.4f} mm</b><br>"
             + ("Contraintes : <b style='color:#c62828'>" + ", ".join(pb_viol) + "</b><br>" if pb_viol
                else "Contraintes : <b style='color:#2e7d32'>respectées</b><br>")
+            + ("Équilibre de la menée : <b>pris en compte</b> dans l'objectif<br>"
+               if objectif.equilibre else
+               "Équilibre de la menée : <i>non pris en compte</i> (case décochée)<br>")
             + f"Variables : {pb.n_var} (courbure et longueur de chaque arc libre)<br>"
             f"Cadence : <b>{cadence:.0f} évaluations/s</b> ({os.cpu_count() or 1} cœurs) ; "
             f"{options.departs} départs de {options.evaluations} évaluations : environ "
@@ -1524,9 +1699,12 @@ class Fenetre(QMainWindow):
             if rap:
                 cellules += ["/".join(f"{x['couple_var']:.1f}" for x in rap),
                              f"{max(x['hertz'] for x in rap):.0f}",
-                             f"{rap[0]['jeu_min']:.2f}–{rap[2]['jeu_max']:.2f}"]
+                             f"{rap[0]['jeu_min']:.2f}–{rap[2]['jeu_max']:.2f}",
+                             # équilibre de la menée : affiché même quand la case est décochée,
+                             # c'est une propriété du résultat, pas seulement un terme de l'objectif
+                             "/".join(f"{100 * x['symetrie']:.0f}" for x in rap)]
             else:
-                cellules += ["-", "-", "-"]
+                cellules += ["-", "-", "-", "-"]
             cellules += ["dissymétriques" if o.dissymetrique else "symétriques",
                          "valable" if o.valable else "non valable : " + ", ".join(
                              _libelle_violation(k) for k in o.violations)]
@@ -2020,6 +2198,8 @@ class Fenetre(QMainWindow):
             chemin = chemin.with_suffix(".Eno" if "Eno" in filtre else ".json")
         try:
             if chemin.suffix.lower() == ".eno":
+                if any(m.zz < 0 for m in mobiles):  # le format Fortran ne connaît pas les couronnes
+                    raise ValueError("une couronne intérieure (Z < 0) ne peut pas s'écrire en .Eno")
                 arcs.ecrire_eno(chemin, mobiles, self._extras_courants())
             else:
                 arcs.ecrire_json(chemin, mobiles, self._extras_courants())
