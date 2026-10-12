@@ -26,6 +26,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Emu, Pt, RGBColor
 from matplotlib.figure import Figure
 
+from commun import theme
 from . import dxf_io
 from .constantes import RHO_SILICIUM
 from .echappement import ReglageEchappement
@@ -346,6 +347,7 @@ def _encadre(doc, titre, texte, couleur):
     r2.font.color.rgb = couleur
 
 
+@theme.clair()
 def construire_rapport(chemin_docx: str, geom, spec, parametres,
                         reglage_echappement: ReglageEchappement = None,
                         reglage_thermique: ReglageThermique = None,

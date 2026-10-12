@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 # PillowWriter fonctionne indépendamment du backend interactif choisi.
 from matplotlib.animation import FuncAnimation, PillowWriter
 
+from commun import theme
 from .physique import resoudre_elastica
 from .modele import GeometrieSpiral
 
@@ -57,9 +58,9 @@ def tracer_repere_mouvement(ax, rayon_max: float, cote_rouage: bool = True,
         # 1.10 rayon : les repères sortent du spiral, sinon le repère 3H
         # tombe exactement sur le collet (à 6.2° de là, au même rayon) et les
         # deux étiquettes se recouvrent.
-        ax.annotate(nom, (1.10 * rayon_max * ca, 1.10 * rayon_max * sa), color="0.30",
+        ax.annotate(nom, (1.10 * rayon_max * ca, 1.10 * rayon_max * sa), color=theme.gris(0.30),
                     fontsize=9, ha="center", va="center", zorder=5,
-                    bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=1.0))
+                    bbox=dict(facecolor=theme.fond(), edgecolor="none", alpha=0.8, pad=1.0))
 
     # Axe de tige : il sort au repère 3H, donc à droite. Tracé d'un seul côté
     # (c'est un demi-axe, la tige ne traverse pas le mouvement) et étiqueté à
@@ -68,11 +69,11 @@ def tracer_repere_mouvement(ax, rayon_max: float, cote_rouage: bool = True,
     a_tige = reperes["3H"]
     tx, ty = np.cos(a_tige), np.sin(a_tige)
     ax.plot([0.0, 0.88 * rayon_max * tx], [0.0, 0.88 * rayon_max * ty],
-            "-", color="0.55", lw=1.2, zorder=4)
+            "-", color=theme.gris(0.55), lw=1.2, zorder=4)
     ax.annotate("axe de tige", (0.74 * rayon_max * tx, 0.74 * rayon_max * ty),
-                color="0.40", fontsize=7.5, ha="center", va="bottom", zorder=5,
+                color=theme.gris(0.40), fontsize=7.5, ha="center", va="bottom", zorder=5,
                 xytext=(0, 3), textcoords="offset points",
-                bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=1.0))
+                bbox=dict(facecolor=theme.fond(), edgecolor="none", alpha=0.8, pad=1.0))
 
     if angle_ancre_deg is not None:
         # Ligne des centres : un DEMI-AXE, tracé depuis l'axe du balancier vers
@@ -89,7 +90,7 @@ def tracer_repere_mouvement(ax, rayon_max: float, cote_rouage: bool = True,
                     (1.06 * rayon_max * ex, 1.06 * rayon_max * ey),
                     color="tab:green", fontsize=7, ha="right", va="top", zorder=5,
                     xytext=(0, -5), textcoords="offset points",
-                    bbox=dict(facecolor="white", edgecolor="none", alpha=0.85, pad=1.0))
+                    bbox=dict(facecolor=theme.fond(), edgecolor="none", alpha=0.85, pad=1.0))
 
     if angle_collet_deg is not None and rayon_min is not None:
         # Le collet, marqué là où il est réellement : contre la virole. Le point
@@ -102,10 +103,10 @@ def tracer_repere_mouvement(ax, rayon_max: float, cote_rouage: bool = True,
         ax.annotate("collet", (rayon_min * np.cos(a), rayon_min * np.sin(a)),
                     color="tab:green", fontsize=7.5, ha="left", va="bottom", zorder=6,
                     xytext=(4, 4), textcoords="offset points",
-                    bbox=dict(facecolor="white", edgecolor="none", alpha=0.85, pad=1.0))
+                    bbox=dict(facecolor=theme.fond(), edgecolor="none", alpha=0.85, pad=1.0))
 
     ax.annotate(nom_vue(cote_rouage), (0.5, -0.19), xycoords="axes fraction",
-                ha="center", va="top", fontsize=7.5, color="0.35")
+                ha="center", va="top", fontsize=7.5, color=theme.gris(0.35))
 
 
 def tracer_vecteur_g(ax, rayon_max: float, nom_position: str):
@@ -165,6 +166,7 @@ def indices_aller_retour(n_frames: int):
     return list(range(n_frames)) + list(range(n_frames - 2, 0, -1))
 
 
+@theme.clair()
 def sauvegarder_gif_deploiement(angles_deg, frames, chemin_gif: str, fps: int = 15,
                                  aller_retour: bool = True):
     """Encode les frames déjà calculées (calculer_frames_deploiement) en GIF
@@ -176,9 +178,9 @@ def sauvegarder_gif_deploiement(angles_deg, frames, chemin_gif: str, fps: int = 
     marge = 0.1 * max(toutes_x.max() - toutes_x.min(), toutes_y.max() - toutes_y.min(), 1e-6)
 
     fig, ax = plt.subplots(figsize=(6, 6))
-    ligne_ext, = ax.plot([], [], "k-", lw=0.9)
-    ligne_int, = ax.plot([], [], "k-", lw=0.9)
-    ax.plot(0, 0, "k+", ms=10)
+    ligne_ext, = ax.plot([], [], "-", color=theme.encre(), lw=0.9)
+    ligne_int, = ax.plot([], [], "-", color=theme.encre(), lw=0.9)
+    ax.plot(0, 0, "+", color=theme.encre(), ms=10)
     ax.set_xlim(toutes_x.min() - marge, toutes_x.max() + marge)
     ax.set_ylim(toutes_y.min() - marge, toutes_y.max() + marge)
     ax.set_aspect("equal")

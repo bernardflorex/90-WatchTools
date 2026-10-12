@@ -7,3 +7,4 @@ PySide6
 joblib
 matplotlib
 python-docx
+cma

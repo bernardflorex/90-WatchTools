@@ -15,11 +15,13 @@ if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtWidgets import QApplication
-from spiral_lab.app import LaboSpiralApp
+from commun import theme
+from spiral.app import LaboSpiralApp
 
 
 def main():
     app = QApplication(sys.argv)
+    theme.appliquer(app)
     fenetre = LaboSpiralApp()
     fenetre.show()
     sys.exit(app.exec())

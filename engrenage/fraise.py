@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-import arcs
+from . import arcs
 
 N_ECHANT = 2000  # points de l'échantillonnage fin du flanc pour l'enveloppe roue -> fraise
 

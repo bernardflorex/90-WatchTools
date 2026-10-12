@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QTimer
 
+from commun import navigation, theme
 from .parametrage import ParametresSpiral, construire_geometrie, epaisseur_theorique
 from .presets import (
     SpecMouvement, BornesOptimisation, HyperparametresGA,
@@ -88,11 +89,11 @@ def _inertie_interne(j_mg_cm2: float) -> float:
     """mg.cm^2 (affiché) -> kg.m^2 (interne). Seule porte d'entrée."""
     return j_mg_cm2 / _J_KGM2_VERS_MGCM2
 
-# Dossier où atterrissent les projets enregistrés, à la racine du dépôt (le
-# parent du paquet) : un emplacement fixe et prévisible, plutôt que le dossier
-# courant qui dépend de l'endroit d'où l'application a été lancée.
+# Dossier où atterrissent les projets enregistrés, dans le dossier du paquet :
+# un emplacement fixe et prévisible, plutôt que le dossier courant qui dépend
+# de l'endroit d'où l'application a été lancée.
 _RACINE_RESULTS = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Results")
+    os.path.dirname(os.path.abspath(__file__)), "Results")
 
 
 def _spinbox(minimum, maximum, valeur, pas=1.0, decimales=3):
@@ -260,6 +261,7 @@ class LaboSpiralApp(QMainWindow):
         v = QVBoxLayout(conteneur)
         v.setContentsMargins(0, 0, 0, 0)
         v.addWidget(NavigationToolbar(canvas, conteneur), 0)
+        navigation.activer(canvas)  # molette, glisser, double-clic : comme la vue de la came
         v.addWidget(canvas, 1)
         return conteneur
 
@@ -365,6 +367,7 @@ class LaboSpiralApp(QMainWindow):
         self.ax_anim = self.fig_anim.add_subplot(111)
         self.canvas_anim = FigureCanvas(self.fig_anim)
         barre_anim = NavigationToolbar(self.canvas_anim, conteneur)
+        navigation.activer(self.canvas_anim)
         v.addWidget(barre_anim, 0)
         v.addWidget(self.canvas_anim, 1)
 
@@ -1541,9 +1544,9 @@ class LaboSpiralApp(QMainWindow):
         self.ax_zoom_phillips.clear()
         if self.geom is not None:
             ext, inte = self.geom.contour_flancs()
-            self.ax_geom.plot(ext[:, 0], ext[:, 1], "k-", lw=0.8)
-            self.ax_geom.plot(inte[:, 0], inte[:, 1], "k-", lw=0.8)
-            self.ax_geom.plot(0, 0, "k+", ms=10)
+            self.ax_geom.plot(ext[:, 0], ext[:, 1], "-", color=theme.encre(), lw=0.8)
+            self.ax_geom.plot(inte[:, 0], inte[:, 1], "-", color=theme.encre(), lw=0.8)
+            self.ax_geom.plot(0, 0, "+", color=theme.encre(), ms=10)
             tracer_repere_mouvement(
                 self.ax_geom, float(self.geom.rayon().max()),
                 self.chk_cote_rouage.isChecked(),
@@ -1571,15 +1574,15 @@ class LaboSpiralApp(QMainWindow):
             marge_p = n_p // 2
 
             i_fin_g = min(n_g + marge_g, self.geom.n)
-            self.ax_zoom_grossmann.plot(ext[:i_fin_g, 0], ext[:i_fin_g, 1], "k.-", ms=2, lw=0.8)
-            self.ax_zoom_grossmann.plot(inte[:i_fin_g, 0], inte[:i_fin_g, 1], "k.-", ms=2, lw=0.8)
+            self.ax_zoom_grossmann.plot(ext[:i_fin_g, 0], ext[:i_fin_g, 1], ".-", color=theme.encre(), ms=2, lw=0.8)
+            self.ax_zoom_grossmann.plot(inte[:i_fin_g, 0], inte[:i_fin_g, 1], ".-", color=theme.encre(), ms=2, lw=0.8)
             self.ax_zoom_grossmann.set_aspect("equal")
             self.ax_zoom_grossmann.set_title("Zoom collet (Grossmann)", fontsize=9)
             self.ax_zoom_grossmann.tick_params(labelsize=7)
 
             i_debut_p = max(self.geom.n - n_p - marge_p, 0)
-            self.ax_zoom_phillips.plot(ext[i_debut_p:, 0], ext[i_debut_p:, 1], "k.-", ms=2, lw=0.8)
-            self.ax_zoom_phillips.plot(inte[i_debut_p:, 0], inte[i_debut_p:, 1], "k.-", ms=2, lw=0.8)
+            self.ax_zoom_phillips.plot(ext[i_debut_p:, 0], ext[i_debut_p:, 1], ".-", color=theme.encre(), ms=2, lw=0.8)
+            self.ax_zoom_phillips.plot(inte[i_debut_p:, 0], inte[i_debut_p:, 1], ".-", color=theme.encre(), ms=2, lw=0.8)
             self.ax_zoom_phillips.set_aspect("equal")
             self.ax_zoom_phillips.tick_params(labelsize=7)
 
@@ -1590,8 +1593,8 @@ class LaboSpiralApp(QMainWindow):
                 # active de la longueur totale.
                 na = self.geom.n_actif
                 for ax, lw in ((self.ax_geom, 1.6), (self.ax_zoom_phillips, 2.2)):
-                    ax.plot(ext[na - 1:, 0], ext[na - 1:, 1], "-", color="0.65", lw=lw)
-                    ax.plot(inte[na - 1:, 0], inte[na - 1:, 1], "-", color="0.65", lw=lw)
+                    ax.plot(ext[na - 1:, 0], ext[na - 1:, 1], "-", color=theme.gris(0.65), lw=lw)
+                    ax.plot(inte[na - 1:, 0], inte[na - 1:, 1], "-", color=theme.gris(0.65), lw=lw)
                     ax.plot(self.geom.x[na - 1], self.geom.y[na - 1], "o",
                             color="tab:red", ms=6, mfc="none", mew=1.5)
                 self.ax_zoom_phillips.set_title(
@@ -1723,8 +1726,8 @@ class LaboSpiralApp(QMainWindow):
         self.ax_cg_xy.clear()
         self.ax_cg_angle.clear()
         trace = self.ax_cg_xy.scatter(xc, yc, c=angles, cmap="coolwarm", s=14, zorder=3)
-        self.ax_cg_xy.plot(xc, yc, "-", color="0.6", lw=0.8, zorder=2)
-        self.ax_cg_xy.plot(xc.mean(), yc.mean(), "k+", ms=12, zorder=4)
+        self.ax_cg_xy.plot(xc, yc, "-", color=theme.gris(0.6), lw=0.8, zorder=2)
+        self.ax_cg_xy.plot(xc.mean(), yc.mean(), "+", color=theme.encre(), ms=12, zorder=4)
         etendue = float(np.hypot(xc - xc.mean(), yc - yc.mean()).max())
         # « equal » avec adjustable="datalim" : l'échelle reste identique en x
         # et en y -- la forme de l'orbite n'est donc pas déformée, ce qui est
@@ -1755,7 +1758,7 @@ class LaboSpiralApp(QMainWindow):
 
         self.ax_cg_angle.plot(angles, xc - xc.mean(), "o-", ms=3, label="x (écart à la moyenne)")
         self.ax_cg_angle.plot(angles, yc - yc.mean(), "s-", ms=3, label="y (écart à la moyenne)")
-        self.ax_cg_angle.axvline(0, color="k", lw=0.8)
+        self.ax_cg_angle.axvline(0, color=theme.encre(), lw=0.8)
         self.ax_cg_angle.set_xlabel("Angle du balancier (°)")
         self.ax_cg_angle.set_ylabel("Déplacement du CG (µm)")
         self.ax_cg_angle.grid(True, linestyle=":", alpha=0.5)
@@ -1772,7 +1775,7 @@ class LaboSpiralApp(QMainWindow):
                 self.ax_epaisseur.plot(self.geom.s, self.geom.epaisseur_finie * 1000.0, "-",
                                         label="lame finie (oxyde compris)")
                 self.ax_epaisseur.plot(self.geom.s, self.geom.epaisseur * 1000.0, "--",
-                                        color="0.5", label="cote de gravure")
+                                        color=theme.gris(0.5), label="cote de gravure")
                 self.ax_epaisseur.legend(fontsize=8)
             else:
                 self.ax_epaisseur.plot(self.geom.s, self.geom.epaisseur * 1000.0, "-")
@@ -1804,7 +1807,7 @@ class LaboSpiralApp(QMainWindow):
             if texte_actif:
                 bouton.setText(texte_actif)
             bouton.setEnabled(False)
-            bouton.setStyleSheet("background-color: #f5c542; font-weight: bold;")
+            bouton.setStyleSheet(theme.ACTIF)
         else:
             texte_repos = bouton.property("_texte_repos")
             if texte_repos:
@@ -1936,7 +1939,7 @@ class LaboSpiralApp(QMainWindow):
             self.ax_pareto.scatter(disp, jeu_um)
             self.ax_pareto.set_xlabel("Dispersion de marche (s/j)")
             self.ax_pareto.set_ylabel("Jeu min inter-spires (µm)")
-            self.ax_pareto.axhline(self.spec.jeu_min_spires * 1000, color="r", ls="--", lw=0.8, label="jeu min requis")
+            self.ax_pareto.axhline(self.spec.jeu_min_spires * 1000, color="tab:red", ls="--", lw=0.8, label="jeu min requis")
             self.ax_pareto.legend()
         self.canvas_pareto.draw_idle()
 
@@ -1981,14 +1984,14 @@ class LaboSpiralApp(QMainWindow):
             style = "s--" if nom in POSITIONS_HORIZONTALES else "o-"
             largeur = 2.0 if nom in POSITIONS_HORIZONTALES else 1.0
             self.ax_marche.plot(amplitudes, valeurs, style, lw=largeur, ms=4, label=nom)
-        self.ax_marche.plot(amplitudes, resultat["isochronisme"], ":", color="0.35",
+        self.ax_marche.plot(amplitudes, resultat["isochronisme"], ":", color=theme.gris(0.35),
                             lw=1.5, label="isochronisme propre")
         self.ax_marche.plot(amplitudes, resultat["echappement"], ":", color="tab:red",
                             lw=1.5, label="échappement")
         if resultat["diag_jeu_goupilles"].get("actif"):
             self.ax_marche.plot(amplitudes, resultat["jeu_goupilles"], ":", color="tab:purple",
                                 lw=1.5, label="jeu de goupilles")
-        self.ax_marche.axvline(reglage.amplitude_basse_deg, color="0.7", ls="-.", lw=0.8)
+        self.ax_marche.axvline(reglage.amplitude_basse_deg, color=theme.gris(0.7), ls="-.", lw=0.8)
         self.ax_marche.set_xlabel("Amplitude (deg)")
         self.ax_marche.set_ylabel("Marche diurne (s/j)")
         self.ax_marche.set_title(
@@ -1996,7 +1999,7 @@ class LaboSpiralApp(QMainWindow):
             f"spiral {resultat['iso_amplitude_basse']:+.2f} s/j "
             f"contre {-reglage.retard_s_par_j:+.2f} s/j d'échappement "
             f"(écart {resultat['ecart_compensation']:+.2f} s/j)", fontsize=9)
-        self.ax_marche.axhline(0, color="k", lw=0.8)
+        self.ax_marche.axhline(0, color=theme.encre(), lw=0.8)
         self.ax_marche.grid(True, linestyle=":", alpha=0.5)
         self.ax_marche.legend(fontsize=8, ncol=2)
         self.fig_marche.tight_layout()
@@ -2053,9 +2056,9 @@ class LaboSpiralApp(QMainWindow):
         # Repère COSC : la bande dans laquelle la marche doit rester pour tenir
         # 0.6 s/j/°C sur la plage visée.
         etendue = reglage.temperature_max - reglage.temperature_min
-        self.ax_thermique.axhspan(-0.6 * etendue / 2, 0.6 * etendue / 2, color="0.9",
+        self.ax_thermique.axhspan(-0.6 * etendue / 2, 0.6 * etendue / 2, color=theme.gris(0.9),
                                    zorder=0, label="bande COSC (0.6 s/j/°C)")
-        self.ax_thermique.axhline(0, color="k", lw=0.8)
+        self.ax_thermique.axhline(0, color=theme.encre(), lw=0.8)
         self.ax_thermique.set_xlabel("Température (°C)")
         self.ax_thermique.set_ylabel("Marche (s/j)")
         self.ax_thermique.grid(True, linestyle=":", alpha=0.5)
@@ -2364,12 +2367,12 @@ class LaboSpiralApp(QMainWindow):
 
         ax2 = self.ax_dvh_ecart
         ax2.clear()
-        ax2.plot(amplitudes, dvh0, "--", color="0.35", lw=1.0, alpha=0.7,
+        ax2.plot(amplitudes, dvh0, "--", color=theme.gris(0.35), lw=1.0, alpha=0.7,
                  label=f"DVH — {n0} éléments")
-        ax2.plot(amplitudes, dvh1, "-", color="k", lw=1.8, label=f"DVH — {n1} éléments")
+        ax2.plot(amplitudes, dvh1, "-", color=theme.encre(), lw=1.8, label=f"DVH — {n1} éléments")
         ax2.fill_between(amplitudes, dvh0, dvh1, color="tab:orange", alpha=0.25,
                          label="incertitude de maillage")
-        ax2.axhline(0, color="k", lw=0.8)
+        ax2.axhline(0, color=theme.encre(), lw=0.8)
         ax2.set_xlabel("amplitude (deg)")
         ax2.set_ylabel("DVH (s/j)")
         ax2.set_title("DVH = 6H − à plat", fontsize=10)
@@ -2496,11 +2499,11 @@ class LaboSpiralApp(QMainWindow):
 
         self.ax_jeu_min.clear()
         ext0, inte0 = self.geom.contour_flancs()
-        self.ax_jeu_min.plot(ext0[:, 0], ext0[:, 1], "-", color="lightgray", lw=0.7, label="repos (0°)")
-        self.ax_jeu_min.plot(inte0[:, 0], inte0[:, 1], "-", color="lightgray", lw=0.7)
-        self.ax_jeu_min.plot(Xe, Ye, "r-", lw=0.9, label=f"déformé à {angle_pire:+.0f}°")
-        self.ax_jeu_min.plot(Xi, Yi, "r-", lw=0.9)
-        self.ax_jeu_min.plot(0, 0, "k+", ms=10)
+        self.ax_jeu_min.plot(ext0[:, 0], ext0[:, 1], "-", color=theme.gris(0.83), lw=0.7, label="repos (0°)")
+        self.ax_jeu_min.plot(inte0[:, 0], inte0[:, 1], "-", color=theme.gris(0.83), lw=0.7)
+        self.ax_jeu_min.plot(Xe, Ye, "-", color="tab:red", lw=0.9, label=f"déformé à {angle_pire:+.0f}°")
+        self.ax_jeu_min.plot(Xi, Yi, "-", color="tab:red", lw=0.9)
+        self.ax_jeu_min.plot(0, 0, "+", color=theme.encre(), ms=10)
         self.ax_jeu_min.set_aspect("equal")
         self.ax_jeu_min.set_xlabel("x (mm)")
         self.ax_jeu_min.set_ylabel("y (mm)")
@@ -2564,16 +2567,19 @@ class LaboSpiralApp(QMainWindow):
             return
         i = self._anim_sequence[pos]
         Xe, Ye, Xi, Yi = self._anim_frames[i]
+        # le zoom de l'utilisateur tient pendant la lecture
+        xlim, ylim = (self.canvas_anim.navigation.vue_utilisateur(self.ax_anim)
+                      or (self._anim_xlim, self._anim_ylim))
         self.ax_anim.clear()
         ext0, inte0 = self.geom.contour_flancs() if self.geom is not None else (None, None)
         if ext0 is not None:
-            self.ax_anim.plot(ext0[:, 0], ext0[:, 1], "-", color="lightgray", lw=0.6)
-            self.ax_anim.plot(inte0[:, 0], inte0[:, 1], "-", color="lightgray", lw=0.6)
-        self.ax_anim.plot(Xe, Ye, "b-", lw=0.9)
-        self.ax_anim.plot(Xi, Yi, "b-", lw=0.9)
-        self.ax_anim.plot(0, 0, "k+", ms=10)
-        self.ax_anim.set_xlim(*self._anim_xlim)
-        self.ax_anim.set_ylim(*self._anim_ylim)
+            self.ax_anim.plot(ext0[:, 0], ext0[:, 1], "-", color=theme.gris(0.83), lw=0.6)
+            self.ax_anim.plot(inte0[:, 0], inte0[:, 1], "-", color=theme.gris(0.83), lw=0.6)
+        self.ax_anim.plot(Xe, Ye, "-", color="tab:blue", lw=0.9)
+        self.ax_anim.plot(Xi, Yi, "-", color="tab:blue", lw=0.9)
+        self.ax_anim.plot(0, 0, "+", color=theme.encre(), ms=10)
+        self.ax_anim.set_xlim(*xlim)
+        self.ax_anim.set_ylim(*ylim)
         self.ax_anim.set_aspect("equal")
         self.ax_anim.set_xlabel("x (mm)")
         self.ax_anim.set_ylabel("y (mm)")

@@ -34,15 +34,20 @@ avec une IHM commune. Un programme d'engrenages est prevu.
 
 ## 2. Environnement et lancement
 
-L'environnement de l'utilisateur est **`/home/florian/DEV/virtual_env/.came`**.
-Il y a aussi un `.venv` dans le projet, **incomplet** (il manque ezdxf) : les
-lanceurs preferent deliberement un environnement *complet*.
+Depuis la fusion dans WatchTools, ce dossier est le paquet `came` (l'ancien
+sous-dossier `came/came/` a ete remonte d'un niveau) et l'environnement est
+**`/home/florian/DEV/virtual_env/.watchtools`**. Tout se lance depuis la racine
+de WatchTools ; les lanceurs `came.sh` / `came.bat` n'ont pas ete repris.
 
-    ./came.sh                 lance l'interface
-    ./came.sh --verifier      versions + calcul d'essai, ne lance rien
-    ./came.sh --raccourci     entree de menu KDE / GNOME
-    ./came.sh --chrono        calcul en console
-    came.bat                  idem sous Windows (jamais execute faute de Windows)
+    python main.py                   l'accueil : une icone par outil, chacun dans son processus
+    python main.py came              cet outil, sans passer par l'accueil
+    python -m came.main              cet outil seul
+    python -m came.main --chrono     calcul en console
+    python came/verifier.py          versions + calcul d'essai, ne lance rien
+
+Le theme (couleurs, feuille de style) et les widgets de panneau
+(`OngletsCompacts`, `Etiquette`, `soft`, `aide`) sont dans `commun/`, partages
+avec les autres outils.
 
 Dependances : **PySide6** (obligatoire), numpy + numba (acceleration), ezdxf
 (export DXF). Qt est **PySide6** et non PyQt6 — choix de licence, pour
@@ -84,15 +89,15 @@ Ne jamais conclure « le coeur ne se construit pas » sans avoir attendu.
 | fichier | role |
 |---|---|
 | `main.py` | CLI : `--chrono` (= `--cli`), `--nsga`, `--marteau`, `--face`, `--figer`, `--procs`, `--cellules`, `--population`, `--generations`, `--scan` |
-| `came/core.py` | `Params`, `FlatFace`/`ArcFace`, `contour_plan()`, `synthesize()` (came simple, conservee mais hors flux), `pose()` |
-| `came/chrono.py` | `ChronoParams`, `synthesize_chrono()` : deux flancs, plat, raccords, pointe. `support()` donne (bet, Hs, ss) |
-| `came/profil.py` | `Profil` (courbure a bande limitee **+ plat explicite**), `evaluer()`, `_ouverture_nez()`, `dimensionner_ressort()`, `longueur_plat()`, `balayage_marteau()`, `ProfilImporte` |
-| `came/noyau.py` | noyaux numba + repli Python pur, valides l'un contre l'autre. `DISPONIBLE` |
-| `came/nsga2.py` | NSGA-II ecrit a la main, generique : `evaluer_x(x) -> (objectifs, violation)`. `MARTEAU_LIBRE`, `MARTEAU_UTILE` |
-| `came/arcs.py` | approximation par arcs tangents, `mesurer_coeur()` |
-| `came/dxfio.py` | lecture/ecriture DXF (ezdxf), `aligner_contour()` |
-| `came/projet.py` | etudes `.json` |
-| `came/ui.py` | la fenetre, ~2700 lignes |
+| `core.py` | `Params`, `FlatFace`/`ArcFace`, `contour_plan()`, `synthesize()` (came simple, conservee mais hors flux), `pose()` |
+| `chrono.py` | `ChronoParams`, `synthesize_chrono()` : deux flancs, plat, raccords, pointe. `support()` donne (bet, Hs, ss) |
+| `profil.py` | `Profil` (courbure a bande limitee **+ plat explicite**), `evaluer()`, `_ouverture_nez()`, `dimensionner_ressort()`, `longueur_plat()`, `balayage_marteau()`, `ProfilImporte` |
+| `noyau.py` | noyaux numba + repli Python pur, valides l'un contre l'autre. `DISPONIBLE` |
+| `nsga2.py` | NSGA-II ecrit a la main, generique : `evaluer_x(x) -> (objectifs, violation)`. `MARTEAU_LIBRE`, `MARTEAU_UTILE` |
+| `arcs.py` | approximation par arcs tangents, `mesurer_coeur()` |
+| `dxfio.py` | lecture/ecriture DXF (ezdxf), `aligner_contour()` |
+| `projet.py` | etudes `.json` |
+| `ui.py` | la fenetre, ~2700 lignes |
 | `verifier.py` | controle d'installation |
 
 ---
