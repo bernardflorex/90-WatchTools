@@ -1,0 +1,11 @@
+{
+  "r_min": 0.47,
+  "r_max": 2.67,
+  "n_tours_reels": 12.0,
+  "n_tours_fictifs": 14.0,
+  "hauteur_h": 0.1,
+  "freq_cible": 3.5,
+  "inertie_balancier": 8e-10,
+  "jeu_min_spires": 0.012,
+  "amplitude_max": 340.0
+}

@@ -50,9 +50,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import arcs
-import contact
-import evolvente
+from commun import navigation, theme
+from . import arcs
+from . import contact
+from . import evolvente
 
 RACINE = Path(__file__).resolve().parent
 FICHIER_DEFAUT = RACINE / "test.Cev"
@@ -68,7 +69,6 @@ MSG_ARCS_REQUIS = (
 N_DENTS = 3  # dents dessinées par roue
 N_POS = contact.N_POS  # positions de la menante sur une période d'engrènement
 ROUES = ("Menante", "Menée")
-AUGMENTATION_POLICE = 2  # points ajoutés à la taille de police de l'interface
 
 
 @dataclass(frozen=True)
@@ -147,7 +147,7 @@ CHAMPS_FRAISE_TAILLAGE = (
     Champ("n_points_t", "Points", "Nombre de points du profil taillé", 10, 2000, entier=True),
 )
 
-STYLE_ERREUR = "QLineEdit { border: 1px solid #c62828; background: #ffebee; }"
+STYLE_ERREUR = f"QLineEdit {{ border: 1px solid {theme.ERREUR}; background: #4a2226; }}"
 FILTRE_ARCS = "Arcs de cercle (*.json *.Eng *.eng *.Eno *.eno);;Tous les fichiers (*)"
 
 
@@ -221,7 +221,7 @@ def _json_est_arcs(chemin):
 
 
 def _libelle_violation(cle):
-    import recherche
+    from . import recherche
     return recherche.LIBELLES.get(cle, "profil de départ inutilisable")
 
 
@@ -242,7 +242,7 @@ class Travail(QThread):
 
     def run(self):
         try:
-            import recherche
+            from . import recherche
             roues, mobiles, mu, da_neg, da_pos, objectif, options, libres = self.prep
             # la résolution de "jeu_max=auto" se fait dans rechercher() : elle a besoin du profil de
             # référence, qui peut ne pas être le profil courant si celui-ci n'est pas valable (voir
@@ -886,11 +886,11 @@ class Fenetre(QMainWindow):
             if erreur:
                 raise ValueError(erreur)
         except ValueError as e:
-            self.info_fraise.setText(f"<span style='color:#c62828'>{e}</span>")
+            self.info_fraise.setText(f"<span style='color:{theme.ERREUR}'>{e}</span>")
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            import fraise as fraise_mod
+            from . import fraise as fraise_mod
             paire = tuple(
                 fraise_mod.profil_fraise(m, n_periodes=int(v["n_periodes"]) or None,
                                          n_positions=int(v["n_positions"]), pc=v["pc"],
@@ -899,7 +899,7 @@ class Fenetre(QMainWindow):
                 fraise_mod.profil_outil(m, z, sg, n_points=int(v["n_points"]))
                 for m, z, sg in zip(self.mobiles, z_outils, sigmas))
         except (ValueError, ArithmeticError, NotImplementedError) as e:
-            self.info_fraise.setText(f"<span style='color:#c62828'>{type(e).__name__} : {e}</span>")
+            self.info_fraise.setText(f"<span style='color:{theme.ERREUR}'>{type(e).__name__} : {e}</span>")
             return
         finally:
             QApplication.restoreOverrideCursor()
@@ -924,7 +924,7 @@ class Fenetre(QMainWindow):
                        " — pas de tête imposée par la pièce.")
                     + ("" if not o.sigma else
                        f" Dérive au réaffûtage : <b>{taux * 1e3 / 0.05:.1f} µm/mm</b>.")
-                    + ("<br><span style='color:#c62828'>Σ = 0 : axes parallèles, l'outil ne coupe "
+                    + (f"<br><span style='color:{theme.ERREUR}'>Σ = 0 : axes parallèles, l'outil ne coupe "
                        "pas (mortaisage).</span>" if not o.sigma else ""))
         self.info_fraise.setText("Outils calculés :<br>" + "<br>".join(detail)
                                  + f"<br>{len(paire[0].points)} points chacun.")
@@ -946,7 +946,7 @@ class Fenetre(QMainWindow):
         chemin = Path(nom)
         if chemin.suffix.lower() != ".frs":
             chemin = chemin.with_suffix(".Frs")
-        import fraise as fraise_mod
+        from . import fraise as fraise_mod
         hertz = None
         if self.fraise_source is not None and all(m.e_mod for m in self.fraise_source):
             hertz = [(m.e_mod, m.poisson, m.epaisseur) for m in self.fraise_source]
@@ -963,7 +963,7 @@ class Fenetre(QMainWindow):
         nom, _ = QFileDialog.getOpenFileName(self, "Ouvrir une fraise", str(dossier), "Fraise (*.Frs)")
         if not nom:
             return
-        import fraise as fraise_mod
+        from . import fraise as fraise_mod
         try:
             f_m, f_e, hertz = fraise_mod.lire_frs(nom)
         except (OSError, ValueError, IndexError) as e:
@@ -983,7 +983,7 @@ class Fenetre(QMainWindow):
 
     def _tailler_roue(self, w, zz, oy, n_periodes, n_positions, n_points):
         """Taille la roue `w`, remplit `self.taillage[w]` ; retourne une erreur (str) ou None."""
-        import fraise as fraise_mod
+        from . import fraise as fraise_mod
         f = self.fraise_paire[w]
         # fraise-mère : roulement contre une droite (`tailler`) ; outil de scarving : roulement
         # contre une roue (`tailler_outil`). `oy` a le même sens dans les deux cas, un déport de
@@ -1008,7 +1008,7 @@ class Fenetre(QMainWindow):
             return
         v, erreur = self._lire(self.edits_fraise, CHAMPS_FRAISE_TAILLAGE, "taillage")
         if erreur:
-            self.info_taillage.setText(f"<span style='color:#c62828'>{erreur}</span>")
+            self.info_taillage.setText(f"<span style='color:{theme.ERREUR}'>{erreur}</span>")
             return
         w = self.combo_fraise_roue.currentIndex()
         f = self.fraise_paire[w]
@@ -1023,7 +1023,7 @@ class Fenetre(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
         if erreur:
-            self.info_taillage.setText(f"<span style='color:#c62828'>{erreur}</span>")
+            self.info_taillage.setText(f"<span style='color:{theme.ERREUR}'>{erreur}</span>")
             return
         self.info_taillage.setText(self._texte_taillage(w, self.taillage[w]))
         self._dessiner_fraise()
@@ -1037,7 +1037,7 @@ class Fenetre(QMainWindow):
             return
         v, erreur = self._lire(self.edits_fraise, CHAMPS_FRAISE_TAILLAGE[3:], "taillage")
         if erreur:
-            self.info_taillage.setText(f"<span style='color:#c62828'>{erreur}</span>")
+            self.info_taillage.setText(f"<span style='color:{theme.ERREUR}'>{erreur}</span>")
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
@@ -1048,7 +1048,7 @@ class Fenetre(QMainWindow):
             QApplication.restoreOverrideCursor()
         w = self.combo_fraise_roue.currentIndex()
         if any(erreurs):
-            self.info_taillage.setText(f"<span style='color:#c62828'>{' | '.join(e for e in erreurs if e)}</span>")
+            self.info_taillage.setText(f"<span style='color:{theme.ERREUR}'>{' | '.join(e for e in erreurs if e)}</span>")
         else:
             self.info_taillage.setText("<b>Les deux roues sont taillées.</b><br>" + self._texte_taillage(w, self.taillage[w]))
         self._dessiner_fraise()
@@ -1082,7 +1082,7 @@ class Fenetre(QMainWindow):
         # chaîne peut revenir sur elle-même et être refusée par SWTE. Sans ce contrôle, l'échec
         # ne se voyait qu'en aval, par un refus de la simulation (mesuré sur une couronne taillée
         # au scarving, invalide à 5 arcs mais correcte à 4 et à 6).
-        import optim as optim_mod
+        from . import optim as optim_mod
         mauvaises = [ROUES[w].lower() for w, (m, e) in enumerate(zip(mobiles, ecarts))
                      if e is not None and not optim_mod.profil_valide(m)]
         self._message(f"Profil courant = roues taillées en arcs ({', '.join(etats)})." +
@@ -1149,7 +1149,7 @@ class Fenetre(QMainWindow):
         base = Path(nom)
         if base.suffix.lower() == ".dxf":
             base = base.with_suffix("")
-        import dxf as dxf_mod
+        from . import dxf as dxf_mod
         ecrits = []
         try:
             for w in (0, 1):
@@ -1182,8 +1182,8 @@ class Fenetre(QMainWindow):
                 gauche_r = [(-x, y) for x, y in reversed(ref)]
                 xr, yr = zip(*(ref + gauche_r[1:]))
                 self.ax.plot(xr, yr, "--", color="tab:red", lw=1.0, label="profil de référence")
-                self.ax.plot(*p_exc, "*", color="orange", ms=14, mec="black", label=f"excès max {exc * 1e3:.2f} µm")
-                self.ax.plot(*p_pen, "v", color="purple", ms=10, mec="black",
+                self.ax.plot(*p_exc, "*", color="orange", ms=14, mec=theme.encre(), label=f"excès max {exc * 1e3:.2f} µm")
+                self.ax.plot(*p_pen, "v", color="purple", ms=10, mec=theme.encre(),
                             label=f"pénétration max {abs(pen) * 1e3:.2f} µm")
             self.ax.set_title(f"Roue taillée par génération ({ROUES[w].lower()})")
         elif self.fraise_paire is not None:
@@ -1195,7 +1195,7 @@ class Fenetre(QMainWindow):
                 for k in (-1, 0, 1):
                     self.ax.plot([x + k * pas for x, _ in dent], [y for _, y in dent],
                                  color="tab:green", lw=1.4, label="fraise-mère" if k == 0 else None)
-                self.ax.axhline(0.0, color="k", lw=0.8, ls="--", label="droite primitive")
+                self.ax.axhline(0.0, color=theme.encre(), lw=0.8, ls="--", label="droite primitive")
                 self.ax.set_title(f"Fraise-mère ({f.nom}, module {f.module:g} mm)")
             else:  # outil de scarving : une roue, on dessine quelques flancs conjugués
                 pas = 2.0 * math.pi / f.zz
@@ -1207,7 +1207,7 @@ class Fenetre(QMainWindow):
                                      color="tab:green", lw=1.4,
                                      label="flanc actif de l'outil" if (k == 0 and s > 0) else None)
                 th = np.linspace(0.0, 2.0 * math.pi, 400)
-                self.ax.plot(f.rayon * np.cos(th), f.rayon * np.sin(th), "--", color="k", lw=0.8,
+                self.ax.plot(f.rayon * np.cos(th), f.rayon * np.sin(th), "--", color=theme.encre(), lw=0.8,
                              label="primitif de l'outil")
                 self.ax.set_title(f"Outil de scarving ({f.nom}, Z={f.zz}, "
                                   f"rayon primitif {f.rayon:g} mm)")
@@ -1234,7 +1234,7 @@ class Fenetre(QMainWindow):
         chemin = Path(nom)
         if chemin.suffix.lower() != ".dxf":
             chemin = chemin.with_suffix(".dxf")
-        import dxf as dxf_mod
+        from . import dxf as dxf_mod
         try:
             dxf_mod.ecrire_courbe(chemin, f.echantillonner(400), n_periodes=5, pas=f.pc * math.pi * f.module)
         except OSError as e:
@@ -1254,7 +1254,7 @@ class Fenetre(QMainWindow):
         t = self.taillage[w]
         if t is None:
             return None, None
-        import arcs as arcs_mod
+        from . import arcs as arcs_mod
         ref = self.fraise_source[w] if self.fraise_source is not None else None
         module_eff = self.fraise_paire[w].module + 2.0 * t["oy"] / t["zz"]
         reference = ref.points if ref is not None and ref.zz == t["zz"] else None
@@ -1297,8 +1297,8 @@ class Fenetre(QMainWindow):
         chemin = Path(nom)
         if not chemin.suffix:
             chemin = chemin.with_suffix(".Eno" if "Eno" in filtre_choisi else ".dxf")
-        import arcs as arcs_mod
-        import dxf as dxf_mod
+        from . import arcs as arcs_mod
+        from . import dxf as dxf_mod
         try:
             if chemin.suffix.lower() == ".eno":
                 if not paire_ok:
@@ -1327,6 +1327,7 @@ class Fenetre(QMainWindow):
         self.ax = self.figure.add_subplot()
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.barre = NavigationToolbar2QT(self.canvas, self)
+        navigation.activer(self.canvas)  # molette, glisser, double-clic : comme la vue de la came
         cadre = QWidget()
         lay = QVBoxLayout(cadre)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1512,7 +1513,7 @@ class Fenetre(QMainWindow):
         except ValueError as e:
             QMessageBox.warning(self, "Modifier les arcs", str(e))
             return
-        import optim
+        from . import optim
         ecart = arcs.ecart_um(self.mobiles[w], nouveau)
         valide = optim.profil_valide(nouveau)
         reponse = QMessageBox.question(
@@ -1554,23 +1555,23 @@ class Fenetre(QMainWindow):
         """(roues, mobiles, mu, da_neg, da_pos, objectif, options, libres) d'après l'interface, ou
         None (message affiché) si les paramètres ou les arcs sont inutilisables."""
         if self.mobiles_points is not None:
-            self.info_opti.setText(f"<span style='color:#c62828'>{MSG_ARCS_REQUIS}</span>")
+            self.info_opti.setText(f"<span style='color:{theme.ERREUR}'>{MSG_ARCS_REQUIS}</span>")
             return None
         if self.mobiles is None and not self._arcs_de_creation():
             return None
         try:
             v, opti = self.lire_simulation(), self.lire_optimisation()
-            import optim
-            import recherche
+            from . import optim
+            from . import recherche
         except Exception as e:  # noqa: BLE001 - toute erreur doit s'afficher, jamais rester muette
-            self.info_opti.setText(f"<span style='color:#c62828'>{type(e).__name__} : {e}</span>")
+            self.info_opti.setText(f"<span style='color:{theme.ERREUR}'>{type(e).__name__} : {e}</span>")
             return None
         roues = [evolvente.Roue(mob.mo, mob.zz, None, None, 0.0, None, None) for mob in self.mobiles]
         libres = [range(len(mob.points) - 2) if opti["libres"][role] is None else
                   [i for i in opti["libres"][role] if 0 <= i < len(mob.points) - 2]
                   for role, mob in zip("me", self.mobiles)]
         if not sum(len(list(li)) for li in libres):
-            self.info_opti.setText("<span style='color:#c62828'>Aucun arc libre.</span>")
+            self.info_opti.setText(f"<span style='color:{theme.ERREUR}'>Aucun arc libre.</span>")
             return None
         objectif = optim.Objectif(opti["principal"], opti["secondaire"] or None, opti["ponderation"],
                                   equilibre=bool(opti.get("equilibre", 0)),
@@ -1584,7 +1585,7 @@ class Fenetre(QMainWindow):
     @staticmethod
     def _jeu_max_auto(objectif, roues, mobiles, mu, da_neg, da_pos, libres):
         """Objectif dont le jeu maximal est celui du profil de départ à l'entraxe maximal, si demandé."""
-        import optim
+        from . import optim
         if isinstance(objectif.jeu_max, str):
             ref = optim.Probleme(roues, mobiles, mu, da_neg, da_pos, libres, replace(objectif, jeu_max=None)).rapport(None)
             objectif = replace(objectif, jeu_max=ref[2]["jeu_max"] + 0.02)
@@ -1597,7 +1598,7 @@ class Fenetre(QMainWindow):
             return
         roues, mobiles, mu, da_neg, da_pos, objectif, options, libres = prep
         import numpy as np
-        import optim
+        from . import optim
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             objectif = self._jeu_max_auto(objectif, roues, mobiles, mu, da_neg, da_pos, libres)
@@ -1611,7 +1612,7 @@ class Fenetre(QMainWindow):
             s, _ = pb.evaluer(np.zeros(pb.n_var))
             viol = {k: float(a[0]) for k, a in pb.violations(s).items()}
         except Exception as e:  # noqa: BLE001 - toute erreur doit s'afficher, jamais rester muette
-            self.info_opti.setText(f"<span style='color:#c62828'>{type(e).__name__} : {e}</span>")
+            self.info_opti.setText(f"<span style='color:{theme.ERREUR}'>{type(e).__name__} : {e}</span>")
             return
         finally:
             QApplication.restoreOverrideCursor()
@@ -1633,8 +1634,8 @@ class Fenetre(QMainWindow):
             "<th>Interférence</th><th>Menée av./ap.</th><th>Équilibre</th></tr>"
             f"{lignes}</table>"
             f"Rayon d'arc de tête minimal : <b>{rapport[0]['r_tete']:.4f} mm</b><br>"
-            + ("Contraintes : <b style='color:#c62828'>" + ", ".join(pb_viol) + "</b><br>" if pb_viol
-               else "Contraintes : <b style='color:#2e7d32'>respectées</b><br>")
+            + (f"Contraintes : <b style='color:{theme.ERREUR}'>" + ", ".join(pb_viol) + "</b><br>" if pb_viol
+               else f"Contraintes : <b style='color:{theme.SUCCES}'>respectées</b><br>")
             + ("Équilibre de la menée : <b>pris en compte</b> dans l'objectif<br>"
                if objectif.equilibre else
                "Équilibre de la menée : <i>non pris en compte</i> (case décochée)<br>")
@@ -1687,7 +1688,7 @@ class Fenetre(QMainWindow):
 
     def _optimisation_echec(self, message):
         self._fin_travail()
-        self.info_opti.setText(f"<span style='color:#c62828'>Optimisation impossible : {message}</span>")
+        self.info_opti.setText(f"<span style='color:{theme.ERREUR}'>Optimisation impossible : {message}</span>")
 
     def _optimisation_finie(self, liste, stats):
         self._fin_travail()
@@ -1718,7 +1719,7 @@ class Fenetre(QMainWindow):
         n_ok = sum(o.valable for o in liste)
         avertissement = ""
         if stats.get("depart_invalide"):
-            avertissement = (f"<span style='color:#c62828'>Le profil de départ n'était pas valable "
+            avertissement = (f"<span style='color:{theme.ERREUR}'>Le profil de départ n'était pas valable "
                              f"({stats['depart_invalide']}) : la recherche est partie d'un profil valide "
                              f"trouvé à proximité à la place.</span><br>")
         self.info_opti.setText(
@@ -1770,7 +1771,7 @@ class Fenetre(QMainWindow):
         self.setWindowTitle(f"Engrenage - {nom}{' *' if self.modifie else ''}")
 
     def _message(self, texte, erreur=False):
-        self.statut.setStyleSheet("color: #c62828;" if erreur else "color: #2e7d32;")
+        self.statut.setStyleSheet(f"color: {theme.ERREUR if erreur else theme.SUCCES};")
         self.statut.setText(texte)
 
     # --- onglets ---------------------------------------------------------
@@ -1780,7 +1781,7 @@ class Fenetre(QMainWindow):
             self.utiliser_arcs_creation()  # première visite : arcs de la création
         elif i == 2 and self.mobiles is None:
             if self.mobiles_points is not None:
-                self.info_opti.setText(f"<span style='color:#c62828'>{MSG_ARCS_REQUIS}</span>")
+                self.info_opti.setText(f"<span style='color:{theme.ERREUR}'>{MSG_ARCS_REQUIS}</span>")
             elif self._arcs_de_creation():
                 self._remplir_variables()
         else:
@@ -1827,10 +1828,10 @@ class Fenetre(QMainWindow):
         try:
             arcs_roues = [self._arcs_de(r, p) for r, p in zip(roues, profils)]
         except (ValueError, ArithmeticError, IndexError) as e:
-            return None, None, f"<span style='color:#c62828'>Approximation impossible : {e}</span>"
+            return None, None, f"<span style='color:{theme.ERREUR}'>Approximation impossible : {e}</span>"
         info = "<br>".join(
             f"{nom} : {a.n_points - 1} arcs, écart max <b>{a.ecart_max * 1000:.2f} µm</b>"
-            + (f" <span style='color:#c62828'>(tangente finale à {math.degrees(a.erreur_angle):.2f}°)</span>"
+            + (f" <span style='color:{theme.ERREUR}'>(tangente finale à {math.degrees(a.erreur_angle):.2f}°)</span>"
                if abs(a.erreur_angle) > math.radians(0.05) else "")
             for nom, a in zip(ROUES, arcs_roues)
         )
@@ -2020,7 +2021,7 @@ class Fenetre(QMainWindow):
             "<table cellspacing=4><tr><th></th><th>min</th><th>moy.</th><th>max</th><th>variation</th></tr>"
             f"{lignes}</table><small>en % de la valeur idéale ; variation = 2(max-min)/(max+min)</small><br>"
             f"Jeu de la menée : <b>{self.sim.jeu_min:.3f}° à {self.sim.jeu_max:.3f}°</b>"
-            + (" <b style='color:#c62828'>!! coincement</b>" if self.sim.jeu_min <= 0 else "")
+            + (f" <b style='color:{theme.ERREUR}'>!! coincement</b>" if self.sim.jeu_min <= 0 else "")
             + self._texte_hertz()
         )
 
@@ -2031,7 +2032,7 @@ class Fenetre(QMainWindow):
             return ""
         (x1, y1), (x2, y2) = self.sim.hertz_local
         return (f"<br>Pression de Hertz max (1 mN·m) : <b>{pmax:.1f} N/mm²</b> "
-                f"<span style='color:#c62828'>★</span> à la position {i + 1}/{len(self.sim)}<br>"
+                f"<span style='color:{theme.ERREUR}'>★</span> à la position {i + 1}/{len(self.sim)}<br>"
                 f"<small>rayon {math.hypot(x1, y1):.4f} mm sur la menante, {math.hypot(x2, y2):.4f} mm sur la menée</small>")
 
     def afficher_position(self, i):
@@ -2229,7 +2230,7 @@ class Fenetre(QMainWindow):
         roues = [evolvente.Roue(m.mo, m.zz, None, None, 0.0, None, None) for m in self.mobiles]
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            import rapport
+            from . import rapport
             _, resume = rapport.ecrire_rapport(
                 chemin, roues, self.mobiles, v["mu"], v["mt"], v["da_neg"], v["da_pos"],
                 optimisation=self.projet.optimisation, origine=self.origine)
@@ -2257,7 +2258,7 @@ class Fenetre(QMainWindow):
         base = Path(nom)
         if base.suffix.lower() == ".dxf":
             base = base.with_suffix("")
-        import dxf as dxf_mod
+        from . import dxf as dxf_mod
         chemins = [base.with_name(f"{base.name}_{suffixe}.dxf") for suffixe in ("menante", "menee")]
         try:
             if self.mobiles_points is not None:
@@ -2282,16 +2283,9 @@ class Fenetre(QMainWindow):
             event.ignore()
 
 
-def agrandir_police(app, points=AUGMENTATION_POLICE):
-    """Ajoute `points` à la taille de police de toute l'interface Qt."""
-    police = app.font()
-    police.setPointSizeF(police.pointSizeF() + points)
-    app.setFont(police)
-
-
 def main():
     app = QApplication(sys.argv)
-    agrandir_police(app)
+    theme.appliquer(app)
     fenetre = Fenetre(sys.argv[1] if len(sys.argv) > 1 else None)
     fenetre.show()
     return app.exec()

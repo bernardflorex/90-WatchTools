@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 import cma
 import numpy as np
 
-import optim
+from . import optim
 
 TOLERANCES = {"jeu_min": 1e-3, "jeu_max": 1e-3, "r_tete": 1e-3, "interference": optim.EPS_INTERF,
               "ecart_tete": 1e-4}  # dépassements admis (°, °, fraction, mm, mm)

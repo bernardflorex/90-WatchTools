@@ -421,6 +421,8 @@ def dessiner_engrenage(ax, roues, profils, n_dents=3, position=None, trajet=None
     position de la simulation, pour interrompre la ligne d'engrènement et les courbes quand on
     saute d'une paire à la suivante.
     """
+    from matplotlib import rcParams
+    encre = rcParams["text.color"]  # le « noir » du thème courant (noir sur fond blanc)
     a1, a2 = (position.alpha1, position.alpha2) if position else (0.0, None)
     contours, cercles = geometrie_engrenage(roues, profils, n_dents, a1, a2, da, profils_dos)
     couleurs = ("tab:blue", "tab:red")
@@ -429,7 +431,7 @@ def dessiner_engrenage(ax, roues, profils, n_dents=3, position=None, trajet=None
         ax.plot(*zip(*cont), color=couleurs[k], lw=1.4, label=f"{noms[k]}  Z={roue.zz}")
     if profils_arcs:
         for k, cont in enumerate(geometrie_engrenage(roues, profils_arcs, n_dents, a1, a2, da)[0]):
-            ax.plot(*zip(*cont), color="black", lw=0.9, ls=(0, (4, 2)),
+            ax.plot(*zip(*cont), color=encre, lw=0.9, ls=(0, (4, 2)),
                     label="arcs de cercle (export)" if k == 0 else None, zorder=4)
     if points_tangence is not None:
         from matplotlib.collections import LineCollection
@@ -437,7 +439,7 @@ def dessiner_engrenage(ax, roues, profils, n_dents=3, position=None, trajet=None
         placement = _placement(roues, n_dents, a1, a2, da)[0]
         segs = [sg for pn, pl in zip(points_tangence, placement)
                 for sg in traits_dents(pn[0], pn[1], *pl, 0.05 * roues[0].mo, *pn[2:])]
-        ax.add_collection(LineCollection(segs, colors="black", linewidths=1.3, zorder=7,
+        ax.add_collection(LineCollection(segs, colors=encre, linewidths=1.3, zorder=7,
                                          label="points de tangence des arcs"))
     if marque_hertz is not None:
         placement = _placement(roues, n_dents, a1, a2, da)[0]
@@ -446,7 +448,7 @@ def dessiner_engrenage(ax, roues, profils, n_dents=3, position=None, trajet=None
             for j in idx:
                 px, py = _rot((x, y), angle0 + j * 2.0 * math.pi / abs(zz))
                 etoiles.append((centre[0] + px, centre[1] + py))
-        ax.plot(*zip(*etoiles), "*", color="red", mec="black", mew=0.6, ms=13, ls="",
+        ax.plot(*zip(*etoiles), "*", color="red", mec=encre, mew=0.6, ms=13, ls="",
                 label="pression de Hertz max", zorder=8)
     # cercles primitifs (arcs autour du point primitif)
     for (c, r), col in zip(cercles, couleurs):
@@ -466,9 +468,9 @@ def dessiner_engrenage(ax, roues, profils, n_dents=3, position=None, trajet=None
     if superposition:
         _dessiner_courbes(ax, roues[0].mo, superposition, paires)
     if position:
-        ax.plot(*position.contact, "o", color="black", ms=7, label="point d'engrènement", zorder=5)
+        ax.plot(*position.contact, "o", color=encre, ms=7, label="point d'engrènement", zorder=5)
         if position.contact2:
-            ax.plot(*position.contact2, "s", color="white", mec="black", ms=7,
+            ax.plot(*position.contact2, "s", color=rcParams["axes.facecolor"], mec=encre, ms=7,
                     label="2e paire en prise", zorder=5)
         titre = "engrènement d'une paire de dents"
     else:
@@ -505,12 +507,14 @@ def _tracer_par_paires(ax, xs, ys, paires, **style):
 
 def _dessiner_courbes(ax, mo, superposition, paires=None):
     """Axe gradué (100 % au point primitif, sur la ligne des centres) et courbes W, C, N."""
+    from matplotlib import rcParams
+    encre = rcParams["text.color"]
     xs, series, i = superposition
     tic = 0.15 * mo
-    ax.plot([0, 0], [y_pourcent(85.0, mo), y_pourcent(115.0, mo)], color="black", lw=0.8, zorder=3)
+    ax.plot([0, 0], [y_pourcent(85.0, mo), y_pourcent(115.0, mo)], color=encre, lw=0.8, zorder=3)
     for k in range(-3, 4):
         y = y_pourcent(100.0 + k * PAS_POURCENT, mo)
-        ax.plot([-tic, tic], [y, y], color="black", lw=0.8, zorder=3)
+        ax.plot([-tic, tic], [y, y], color=encre, lw=0.8, zorder=3)
         ax.text(1.6 * tic, y, f"{100 + k * PAS_POURCENT:g} %", fontsize=7, va="center",
                 fontweight="bold" if k == 0 else "normal", zorder=3)
     for cle, nom, couleur in COURBES:

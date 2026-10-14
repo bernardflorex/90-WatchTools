@@ -21,8 +21,9 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Cm, Pt, RGBColor
 
-import contact
-import evolvente
+from commun import theme
+from . import contact
+from . import evolvente
 
 N_POS = 150  # positions simulées par entraxe, comme NJ=0 du Fortran (IK=101, mais 150 pour l'affichage)
 N_JEU = 101  # positions pour le jeu (assez pour un résultat stable, moins coûteux que 150)
@@ -169,6 +170,7 @@ def _libelles_libres(libres, n_arcs):
     return ", ".join(str(i + 1) for i in sorted(libres)) or "aucun"
 
 
+@theme.clair()
 def ecrire_rapport(chemin, roues, mobiles, mu, mt, da_neg, da_pos, optimisation=None, origine="",
                    pas_um=10.0, dossier_images=None):
     """Écrit le rapport de simulation à `chemin` (.docx).

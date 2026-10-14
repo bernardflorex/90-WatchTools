@@ -29,7 +29,7 @@ from dataclasses import dataclass
 import numpy as np
 from numba import njit, prange
 
-import arcs
+from . import arcs
 
 TWO_PI = 2.0 * math.pi
 IK = 101  # positions de la menante sur une période (IK d'Enganac pour NJ = 0)
@@ -1019,8 +1019,8 @@ def main():
     import sys
     import time
 
-    import contact
-    import evolvente
+    from . import contact
+    from . import evolvente
 
     fichier = sys.argv[1] if len(sys.argv) > 1 else "test.Cev"
     narcs = int(sys.argv[2]) if len(sys.argv) > 2 else 4
@@ -1077,7 +1077,7 @@ def flanc_arriere(roue, pente, jeu_qe, narcs=None, ni=150):
     nombre d'arcs donné alors qu'un autre passe -- sans cet essai, tout le balayage au-delà de 20
     degrés sortait « profil invalide (rayons de courbure) » et ne mesurait rien.
     """
-    import evolvente as ev
+    from . import evolvente as ev
     r = ev.Roue(mo=roue.mo, zz=roue.zz, nw=float(pente), qe=float(jeu_qe), qg=roue.qg,
                 ma=roue.ma, me=roue.me, e_mod=roue.e_mod, poisson=roue.poisson,
                 epaisseur=roue.epaisseur)

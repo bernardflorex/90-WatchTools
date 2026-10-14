@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-import arcs as arcs_mod
+from . import arcs as arcs_mod
 
 NA = 100  # points par flanc pour la recherche grossière du contact
 NF = 3000  # points par flanc pour l'affinage local (Enganap.F90 : NA=5000 partout)
