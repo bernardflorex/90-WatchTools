@@ -22,15 +22,12 @@ Les tracés (géométrie / marche diurne / front de Pareto) sont dans des
 onglets À DROITE -- ce sont des VUES, pas des réglages, donc les onglets n'y
 posent pas le problème que la note de spiropt_v1/gui.py visait à éviter.
 """
-from dataclasses import replace
-from datetime import datetime
 import os
+from dataclasses import asdict, replace
 
 import numpy as np
 import matplotlib
 matplotlib.use("QtAgg")
-# Le filtre du message d'aspect de matplotlib est posé dans rendu.py, qui est
-# le module graphique commun à l'interface et au rapport de simulation.
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
@@ -40,7 +37,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QDoubleSpinBox, QSpinBox, QScrollArea, QSplitter,
     QTabWidget, QTableWidget, QTableWidgetItem, QFileDialog, QMessageBox,
     QAbstractItemView, QSlider, QApplication, QHeaderView, QCheckBox, QComboBox,
-    QInputDialog,
+    QInputDialog, QLineEdit,
 )
 from PySide6.QtCore import Qt, QTimer
 
@@ -59,13 +56,19 @@ from .isochronisme import (analyser_marches, POSITIONS_HORIZONTALES,
                             positions_verticales)
 from .echappement import ReglageEchappement
 from .thermique import ReglageThermique, analyser_thermique, etude_sensibilite
-from . import dxf_io
+from . import dxf_io, rapport, sauvegarde
 from .optimisation import vecteur_depuis_params, params_depuis_vecteur, PAS_DISPERSION_DEG_DEFAUT
 from .threads import SondageThread, OptimisationThread, AnimationThread
-from .rendu import indices_aller_retour, tracer_repere_mouvement
-from . import rapport
+from .rendu import (sauvegarder_gif_deploiement, indices_aller_retour,
+                     tracer_repere_mouvement)
 
 _LARGEUR_MAX_CHAMP = 110
+
+# Racine des projets enregistrés, dans le dossier du paquet : un emplacement
+# fixe et prévisible, plutôt que le dossier courant, qui dépend de l'endroit
+# d'où l'application a été lancée.
+_RACINE_RESULTS = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "Results")
 
 # L'inertie du balancier vaut ~8e-10 kg.m^2 : illisible dans un champ de saisie,
 # et facile à saisir de travers d'un facteur dix. Elle est donc AFFICHÉE en
@@ -89,12 +92,6 @@ def _inertie_interne(j_mg_cm2: float) -> float:
     """mg.cm^2 (affiché) -> kg.m^2 (interne). Seule porte d'entrée."""
     return j_mg_cm2 / _J_KGM2_VERS_MGCM2
 
-# Dossier où atterrissent les projets enregistrés, dans le dossier du paquet :
-# un emplacement fixe et prévisible, plutôt que le dossier courant qui dépend
-# de l'endroit d'où l'application a été lancée.
-_RACINE_RESULTS = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "Results")
-
 
 def _spinbox(minimum, maximum, valeur, pas=1.0, decimales=3):
     sb = QDoubleSpinBox()
@@ -114,7 +111,7 @@ def _intbox(minimum, maximum, valeur):
     return sb
 
 
-def _texte_ecourte(etiquette: QLabel, texte: str, maxi: int = 34):
+def _texte_ecourte(etiquette: QLabel, texte: str, maxi: int = 40):
     """Affiche un texte long en le RACCOURCISSANT par le milieu, avec le texte
     entier en info-bulle.
 
@@ -136,6 +133,15 @@ def _texte_ecourte(etiquette: QLabel, texte: str, maxi: int = 34):
     etiquette.setToolTip(texte)
     etiquette.setText(" ".join(
         mot if len(mot) <= maxi else f"{mot[:garde]}...{mot[-garde:]}" for mot in mots))
+
+
+def _relatif(ecart: float, reference: float) -> str:
+    """« Δ 0.15 s/j, 37 % » : l'écart de maillage, absolu puis rapporté à la
+    valeur convergée. Sans le pourcentage, deux nombres voisins à l'oeil
+    peuvent cacher une dérive qui dépasse la grandeur mesurée."""
+    if not np.isfinite(reference) or abs(reference) < 1e-12:
+        return f"Δ {abs(ecart):.2f}"
+    return f"Δ {abs(ecart):.2f}, {100.0 * abs(ecart) / abs(reference):.0f} %"
 
 
 def _relatif(ecart: float, reference: float) -> str:
@@ -191,14 +197,57 @@ class LaboSpiralApp(QMainWindow):
     # Construction de l'interface
     # ------------------------------------------------------------------
     def _construire_panneau_gauche(self) -> QWidget:
+        # Les réglages sont répartis en TROIS ONGLETS, un par étape du travail.
+        # Empilés dans un seul panneau déroulant, ils faisaient plus de deux
+        # mille pixels de haut : on passait son temps à faire défiler, et les
+        # commandes d'analyse étaient toujours hors de vue de la table des
+        # solutions.
+        #
+        # Les outils d'analyse sont construits DEUX FOIS, dans l'onglet
+        # « Calculs » et dans l'onglet « Optimisation » : analyser une solution
+        # du front de Pareto ne doit pas obliger à changer d'onglet, puis à
+        # revenir pour en sélectionner une autre. Les boutons dupliqués
+        # appellent les mêmes gestionnaires et écrivent dans les mêmes
+        # résultats (voir _enregistrer_commande).
+        self._commandes = {}
+        self._affichages = {}
+
+        self.onglets_reglages = QTabWidget()
+        self.onglets_reglages.setDocumentMode(True)
+
+        forme = QWidget()
+        v_forme = QVBoxLayout(forme)
+        v_forme.setContentsMargins(2, 4, 2, 2)
+        v_forme.addWidget(self._panneau_origine())
+        v_forme.addWidget(self._panneau_parametres())
+        v_forme.addWidget(self._panneau_sauvegarde_forme())
+        v_forme.addStretch(1)
+        self.onglets_reglages.addTab(forme, "1. Forme")
+
+        calculs = QWidget()
+        v_calc = QVBoxLayout(calculs)
+        v_calc.setContentsMargins(2, 4, 2, 2)
+        v_calc.addWidget(self._panneau_echappement())
+        v_calc.addWidget(self._boite_analyse("calc"))
+        v_calc.addWidget(self._panneau_sauvegarde_calculs())
+        v_calc.addStretch(1)
+        self.onglets_reglages.addTab(calculs, "2. Calculs")
+
+        optim = QWidget()
+        v_opt = QVBoxLayout(optim)
+        v_opt.setContentsMargins(2, 4, 2, 2)
+        v_opt.addWidget(self._panneau_sondage())
+        v_opt.addWidget(self._panneau_optimisation())
+        v_opt.addWidget(self._boite_analyse("optim"))
+        v_opt.addWidget(self._panneau_sauvegarde_optimisation())
+        v_opt.addStretch(1)
+        self.onglets_reglages.addTab(optim, "3. Optimisation")
+
         contenu = QWidget()
         layout = QVBoxLayout(contenu)
-        layout.addWidget(self._panneau_origine())
-        layout.addWidget(self._panneau_parametres())
-        layout.addWidget(self._panneau_sondage())
-        layout.addWidget(self._panneau_optimisation())
-        layout.addWidget(self._panneau_resultats())
-        layout.addStretch(1)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.addWidget(self.onglets_reglages)
+        layout.addStretch(0)
 
         # Rendre le panneau COMPRESSIBLE. Sans cela son contenu imposait une
         # largeur minimale de 496 px alors que la zone visible en fait 404 :
@@ -316,8 +365,8 @@ class LaboSpiralApp(QMainWindow):
         self.tabs.addTab(self._onglet_avec_barre(self.canvas_jeu_min), "Jeu minimal")
 
         # Orbite du centre de gravité : la grandeur que l'optimisation minimise
-        # réellement. Deux vues -- la trajectoire dans le plan (c'est son
-        # ÉTENDUE qui crée l'erreur de marche en position verticale) et les
+        # réellement. Deux vues — la trajectoire dans le plan, dont c'est
+        # l'ÉTENDUE qui crée l'erreur de marche en position verticale, et les
         # deux composantes en fonction de l'angle du balancier, où se lisent
         # les accidents locaux que la trajectoire seule masque.
         # Disposition en DEUX LIGNES et non deux colonnes : l'orbite est très
@@ -330,8 +379,7 @@ class LaboSpiralApp(QMainWindow):
         self.ax_cg_xy = self.fig_cg.add_subplot(gs_cg[0, 0])
         # Axes DÉDIÉ à la barre de couleur, créé une fois : la recréer à chaque
         # tracé l'empilait et rétrécissait le graphe un peu plus à chaque
-        # calcul, et la détacher après un clear() de son axes parent lève une
-        # erreur dans matplotlib.
+        # calcul, et la détacher après un clear() de son parent lève une erreur.
         self.ax_cg_barre = self.fig_cg.add_subplot(gs_cg[0, 1])
         self.ax_cg_angle = self.fig_cg.add_subplot(gs_cg[1, :])
         self.canvas_cg = FigureCanvas(self.fig_cg)
@@ -424,6 +472,16 @@ class LaboSpiralApp(QMainWindow):
         ligne_dxf.addWidget(self.label_dxf, 1)
         layout.addLayout(ligne_dxf)
 
+        # Charger une configuration est une ORIGINE au même titre qu'un DXF :
+        # sa place est en tête de l'onglet, à côté du chargement de dessin, et
+        # non en bas parmi les sauvegardes.
+        btn_cfg = QPushButton("Charger une configuration (.json)...")
+        btn_cfg.setToolTip(
+            "Recharge une configuration complète — spec du mouvement, repère, wafer et "
+            "vecteur de conception — et régénère la géométrie correspondante.")
+        btn_cfg.clicked.connect(self.on_charger_configuration)
+        layout.addWidget(btn_cfg)
+
         form = QFormLayout()
         self.sb_r_min = _spinbox(0.05, 5.0, self.spec.r_min, 0.01, 4)
         self.sb_r_min.setToolTip("Rayon de la virole/collet (mm) -- point d'attache central, solidaire de l'axe du balancier.")
@@ -457,6 +515,15 @@ class LaboSpiralApp(QMainWindow):
         self.sb_jeu_min.setToolTip("Jeu minimal requis entre spires adjacentes (mm), sous déformation à amplitude max. Contrainte dure de l'Optimisation (pas du Sondage).")
         self.sb_amplitude_max = _spinbox(100.0, 360.0, self.spec.amplitude_max, 5.0, 1)
         self.sb_amplitude_max.setToolTip("Amplitude d'oscillation maximale du balancier (deg) -- pire cas utilisé pour le jeu inter-spires, le GIF et la vue \"jeu minimal\".")
+        self.ed_projet = QLineEdit("K1")
+        self.ed_projet.setToolTip(
+            "Nom du calibre ou de l'étude. Il préfixe TOUS les fichiers enregistrés, "
+            "et nomme leur dossier dans Results/ : « K2_20261010-1432 ».\n\n"
+            "Le nom d'abord, l'horodatage ensuite : les études d'un même calibre se "
+            "regroupent, et se trient chronologiquement à l'intérieur. L'ordre inverse "
+            "mêlerait tous les calibres."
+        )
+        form.addRow("nom du projet", self.ed_projet)
         form.addRow("r_min (mm)", self.sb_r_min)
         form.addRow("r_max (mm)", self.sb_r_max)
         form.addRow("n_tours_reels", self.sb_n_tours)
@@ -577,14 +644,6 @@ class LaboSpiralApp(QMainWindow):
         btn_init.setToolTip("Construit un spiral neuf à partir de la spec ci-dessus + des paramètres de forme du panneau 2.")
         btn_init.clicked.connect(self.on_init_archimede)
         ligne_btn.addWidget(btn_init)
-        btn_save = QPushButton("Sauver spec...")
-        btn_save.setToolTip("Sauve UNIQUEMENT la spec du mouvement ci-dessus (pas les paramètres de forme -- voir \"Sauver configuration complète\" au panneau 5).")
-        btn_save.clicked.connect(self.on_sauver_spec)
-        ligne_btn.addWidget(btn_save)
-        btn_load = QPushButton("Charger spec...")
-        btn_load.setToolTip("Charge une spec de mouvement sauvée précédemment.")
-        btn_load.clicked.connect(self.on_charger_spec)
-        ligne_btn.addWidget(btn_load)
         layout.addLayout(ligne_btn)
 
         return box
@@ -753,46 +812,47 @@ class LaboSpiralApp(QMainWindow):
         self.sb_raq_n_pas_arc.setToolTip(
             "Nombre d'éléments discrets du maillage sur l'arc avant le point de comptage."
         )
-        self.sb_raq_piton_angle = _spinbox(0.0, 270.0, 30.0, 5.0, 1)
-        self.sb_raq_piton_angle.setToolTip(
-            "Étendue angulaire (deg) de l'arc AU-DELÀ du parcours des goupilles, "
-            "jusqu'au piton. C'est le paramètre le plus important du montage à "
-            "raquette : c'est la flexion de ce tronçon libre qui déplace la lame "
-            "latéralement au droit des goupilles, donc qui lui permet de venir en "
-            "contact avec l'une d'elles. Trop court, la lame flotte en permanence "
-            "entre les goupilles et la raquette n'a AUCUNE autorité. Trop long, le "
-            "retard dû au jeu devient important. L'excursion latérale varie comme le "
-            "CARRÉ de cette longueur."
-        )
-        self.sb_raq_piton_n_pas = _intbox(0, 2000, 100)
-        self.sb_raq_piton_n_pas.setToolTip("Nombre d'éléments discrets du maillage sur l'arc entre goupilles et piton.")
-        self.sb_raq_jeu = _spinbox(0.0, 200.0, 20.0, 1.0, 1)
-        self.sb_raq_jeu.setToolTip(
-            "Jeu LIBRE total entre les goupilles, épaisseur de lame déjà déduite : la "
-            "lame peut donc s'écarter de ±jeu/2 avant de toucher.\n\n"
-            "0 = piton fixe au point de comptage : aucune erreur de jeu, aucune "
-            "dépendance en amplitude. Ce n'est pas un cas particulier traité à part, "
-            "c'est la limite continue du même modèle.\n\n"
-            "Au-delà, la lame traverse le jeu à chaque alternance ; pendant la "
-            "traversée le spiral n'est plus tenu aux goupilles mais au piton, donc "
-            "plus long et plus souple : la montre retarde, d'autant plus que "
-            "l'amplitude est faible."
-        )
         form.addRow("Plage de réglage ± (s/j)", self.sb_raq_plage)
-        form.addRow("Piton -- angle au-delà (deg)", self.sb_raq_piton_angle)
-        form.addRow("Piton -- n_pas (maillage)", self.sb_raq_piton_n_pas)
-        form.addRow("Jeu libre entre goupilles (µm)", self.sb_raq_jeu)
         form.addRow("Transition -- angle (deg)", self.sb_raq_trans_angle)
         form.addRow("Transition -- n_points (Bézier)", self.sb_raq_n_points)
         form.addRow("Transition -- n_pas (maillage)", self.sb_raq_trans_n_pas)
+        self.sb_raq_piton_angle = _spinbox(0.0, 300.0, 30.0, 5.0, 1)
+        self.sb_raq_piton_angle.setToolTip(
+            "Étendue angulaire de l'arc APRÈS le point de comptage, jusqu'au piton.\n\n"
+            "Cette portion est tenue à ses deux bouts : elle ne travaille pas et ne se "
+            "déforme pas. Elle occupe néanmoins de la place (jeu entre spires) et doit "
+            "être usinée.\n\n"
+            "Lui donner la même valeur qu'à l'arc avant place le point de comptage au "
+            "MILIEU de la portion circulaire, ce qui laisse à la raquette la même course "
+            "dans les deux sens. Une lame trop courte au-delà des goupilles prive la "
+            "raquette d'autorité : l'excursion latérale varie comme le CARRÉ de cette "
+            "longueur (0,9 µm pour 124 µm de lame, 175 µm pour 1856)."
+        )
+        self.sb_raq_piton_n_pas = _intbox(0, 2000, 100)
+        self.sb_raq_piton_n_pas.setToolTip(
+            "Nombre d'éléments discrets du maillage sur l'arc après le point de comptage."
+        )
+        self.sb_raq_jeu = _spinbox(0.0, 200.0, 20.0, 1.0, 1)
+        self.sb_raq_jeu.setToolTip(
+            "Jeu LIBRE entre les deux goupilles de la raquette, au-delà de l'épaisseur "
+            "de la lame (µm).\n\n"
+            "Tant que la lame est plaquée contre une goupille, le spiral est encastré "
+            "là ; dès qu'elle décolle et traverse le jeu, il se comporte comme encastré "
+            "au piton, donc plus long et plus souple. La montre retarde pendant ces "
+            "traversées, d'autant plus que l'amplitude est faible.\n\n"
+            "Zéro redonne EXACTEMENT le montage à piton fixe."
+        )
         form.addRow("Arc avant comptage -- angle (deg)", self.sb_raq_arc_avant)
         form.addRow("Arc avant comptage -- n_pas", self.sb_raq_n_pas_arc)
+        form.addRow("Arc comptage → piton -- angle (deg)", self.sb_raq_piton_angle)
+        form.addRow("Arc comptage → piton -- n_pas", self.sb_raq_piton_n_pas)
+        form.addRow("Jeu entre goupilles (µm)", self.sb_raq_jeu)
         v.addLayout(form)
-        self._champs_raquette = [self.sb_raq_plage, self.sb_raq_piton_angle,
-                                  self.sb_raq_piton_n_pas, self.sb_raq_jeu,
-                                  self.sb_raq_trans_angle, self.sb_raq_n_points,
-                                  self.sb_raq_trans_n_pas, self.sb_raq_arc_avant,
-                                  self.sb_raq_n_pas_arc]
+        self._champs_raquette = [self.sb_raq_plage, self.sb_raq_trans_angle,
+                                  self.sb_raq_n_points, self.sb_raq_trans_n_pas,
+                                  self.sb_raq_n_pas_arc, self.sb_raq_arc_avant,
+                                  self.sb_raq_piton_angle, self.sb_raq_piton_n_pas,
+                                  self.sb_raq_jeu]
         self._champs_phillips = [self.sb_phil_angle, self.sb_phil_n_pas, self.sb_phil_n_points]
         self._maj_etat_raquette()
         return box
@@ -980,7 +1040,6 @@ class LaboSpiralApp(QMainWindow):
         self.table_sondage.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_sondage.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table_sondage.itemSelectionChanged.connect(self.on_selectionner_sondage)
-        self.table_sondage.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_sondage.setMaximumHeight(160)
         layout.addWidget(self.table_sondage)
 
@@ -1002,7 +1061,6 @@ class LaboSpiralApp(QMainWindow):
         form.addRow("Graine (seed)", self.sb_ga_seed)
         layout.addLayout(form)
 
-        layout.addWidget(self._panneau_echappement())
 
         self.btn_optimisation = QPushButton("Lancer l'optimisation")
         self.btn_optimisation.setToolTip(
@@ -1018,13 +1076,19 @@ class LaboSpiralApp(QMainWindow):
         self.label_optim = QLabel("(pas encore lancée)")
         layout.addWidget(self.label_optim)
 
-        self.table_pareto = QTableWidget(0, 3)
-        self.table_pareto.setToolTip("Solutions non-dominées du front de Pareto. Cliquer une ligne charge cette solution comme géométrie active.")
-        self.table_pareto.setHorizontalHeaderLabels(["Dispersion (s/j)", "Jeu min (µm)", "Compens. (s/j)"])
+        # Une colonne de cases a cocher EN PREMIER : elle sert a choisir les
+        # geometries a exporter, independamment de la selection courante. Sans
+        # elle, exporter plusieurs solutions obligerait a les charger une par
+        # une et a relancer un enregistrement a chaque fois.
+        self.table_pareto = QTableWidget(0, 4)
+        self.table_pareto.setToolTip(
+            "Solutions non-dominées du front de Pareto. Cliquer une ligne la charge "
+            "comme géométrie active ; cocher la case la retient pour l'export DXF.")
+        self.table_pareto.setHorizontalHeaderLabels(
+            ["Export", "Dispersion (s/j)", "Jeu min (µm)", "Compens. (s/j)"])
         self.table_pareto.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table_pareto.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table_pareto.itemSelectionChanged.connect(self.on_selectionner_solution)
-        self.table_pareto.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_pareto.setMaximumHeight(160)
         layout.addWidget(self.table_pareto)
 
@@ -1153,148 +1217,433 @@ class LaboSpiralApp(QMainWindow):
         )
 
     # --- 5. Résultats / export -------------------------------------------
-    def _panneau_resultats(self) -> QGroupBox:
-        box = QGroupBox("5. Résultats et export")
+    # ------------------------------------------------------------------
+    # Outils d'analyse, construits une fois par onglet qui en a besoin
+    # ------------------------------------------------------------------
+    def _dire_ecourte(self, cle: str, texte: str, maxi: int = 34):
+        """Comme _dire, mais raccourcit les mots trop longs (chemins) par le
+        milieu et met le texte entier en info-bulle."""
+        for e in self._affichages.get(cle, ()):
+            _texte_ecourte(e, texte, maxi)
+
+    def _infobulle(self, cle: str, texte: str):
+        for e in self._affichages.get(cle, ()):
+            e.setToolTip(texte)
+
+    def _enregistrer_commande(self, cle: str, widget):
+        """Mémorise un widget dupliqué entre onglets, pour que les mises à jour
+        s'appliquent à toutes ses copies. Sans ce registre, un bouton désactivé
+        pendant un calcul ne le serait que dans l'onglet visible, et le même
+        calcul pourrait être relancé depuis l'autre."""
+        self._commandes.setdefault(cle, []).append(widget)
+        return widget
+
+    def _bouton(self, cle: str, texte: str, gestionnaire, infobulle: str = ""):
+        b = QPushButton(texte)
+        if infobulle:
+            b.setToolTip(infobulle)
+        b.clicked.connect(gestionnaire)
+        return self._enregistrer_commande(cle, b)
+
+    def _affichage(self, cle: str, hauteur_min: int = 0, monospace: bool = False):
+        e = QLabel("")
+        e.setWordWrap(True)
+        if hauteur_min:
+            e.setMinimumHeight(hauteur_min)
+        if monospace:
+            e.setStyleSheet("font-family: monospace;")
+        self._affichages.setdefault(cle, []).append(e)
+        return e
+
+    def _dire(self, cle: str, texte: str, infobulle: str = None):
+        """Écrit dans toutes les copies d'un affichage."""
+        for e in self._affichages.get(cle, ()):
+            e.setText(texte)
+            if infobulle is not None:
+                e.setToolTip(infobulle)
+
+    def _occuper(self, cle: str, actif: bool, texte_actif: str = None):
+        """Même rôle que _definir_bouton_actif, mais sur toutes les copies d'une
+        commande : un calcul lancé depuis l'onglet Calculs doit aussi griser le
+        bouton jumeau de l'onglet Optimisation, sinon on peut le relancer en
+        parallèle et écraser le thread en cours."""
+        for b in self._commandes.get(cle, ()):
+            self._definir_bouton_actif(b, actif, texte_actif)
+
+    def _boite_analyse(self, suffixe: str) -> QGroupBox:
+        """Commandes d'analyse de la GÉOMÉTRIE ACTIVE, quelle que soit son
+        origine : DXF importé, forme générée, ou solution retenue sur le front
+        de Pareto. Construite dans l'onglet « Calculs » ET dans l'onglet
+        « Optimisation » : comparer deux solutions ne doit pas obliger à faire
+        l'aller-retour entre les deux."""
+        box = QGroupBox("Analyse de la géométrie active")
         box.setToolTip(
-            "Toutes les actions ci-dessous travaillent sur la GÉOMÉTRIE ACTIVE, quelle "
-            "que soit son origine : DXF chargé au panneau 1, géométrie générée au "
-            "panneau 2, ou solution sélectionnée au panneau 3 ou 4. Après un simple "
-            "chargement DXF, c'est ICI qu'il faut venir directement -- pas besoin des "
-            "panneaux 1-4, qui ne servent qu'à CONSTRUIRE ou OPTIMISER une géométrie."
+            "Ces commandes portent toujours sur la géométrie ACTIVE — la dernière "
+            "générée, importée ou sélectionnée dans une table de solutions. Les tracés "
+            "correspondants apparaissent dans les onglets de droite."
         )
         layout = QVBoxLayout(box)
+        layout.addWidget(self._bouton(
+            "marche", "Calculer la marche diurne et le DVH", self.on_calculer_marche,
+            "Marche par position en fonction de l'amplitude, avec les contributions "
+            "séparées : gravité, isochronisme propre, échappement, jeu de goupilles.\n\n"
+            "Enchaîne ensuite le DVH à HAUTE RÉSOLUTION — marche en position COSC 6H et "
+            "à plat sur toute la plage, au maillage de travail et à un maillage 4x plus "
+            "fin. Le DVH subit la même erreur de discrétisation absolue que la "
+            "dispersion mais vaut au moins deux fois moins qu'elle : lire l'un sans "
+            "l'autre donnerait une confiance que le chiffre ne mérite pas.\n\n"
+            "Calcul long : trois balayages elastica complets."))
+        layout.addWidget(self._affichage("dvh"))
+        layout.addWidget(self._bouton(
+            "anim", "Calculer l'animation et le jeu minimal", self.on_calculer_animation,
+            "Calcule 41 formes déformées entre -amplitude_max et +amplitude_max, puis "
+            "cherche l'angle où le jeu inter-spires est le plus faible et affiche la "
+            "forme déformée à cet angle.\n\n"
+            "Les deux vont ensemble : le jeu minimal est un instantané du déploiement "
+            "qu'on vient d'animer, et il se lit sur le même balayage."))
+        layout.addWidget(self._affichage("gif"))
 
-        btn_marche = QPushButton("Calculer la marche diurne")
-        btn_marche.setToolTip(
-            "Fonctionne quelle que soit l'origine de la géométrie active (DXF importé, "
-            "génération paramétrique, ou solution issue du Sondage/de l'Optimisation) -- "
-            "pas besoin de repasser par les panneaux 1-4."
-        )
-        btn_marche.clicked.connect(self.on_calculer_marche)
-        layout.addWidget(btn_marche)
-
-        self.btn_dvh = QPushButton("Marche 6H / à plat à haute résolution")
-        self.btn_dvh.setToolTip(
-            "Recalcule la marche en position COSC 6H et à plat sur TOUTE la plage "
-            "d'amplitude, au maillage de travail ET à un maillage 4x plus fin, et trace "
-            "leur différence — le DVH.\n\n"
-            "Pourquoi une vue dédiée : le DVH subit la même erreur de discrétisation "
-            "absolue que la dispersion, mais il vaut au moins deux fois moins qu'elle "
-            "(les positions 6H et 12H sont toutes deux dans l'éventail). L'erreur y pèse "
-            "donc bien plus lourd en relatif — typiquement 38 % contre 8 %. Vérifier la "
-            "dispersion ne valide PAS le DVH.\n\n"
-            "Lire l'écart entre trait plein et pointillé : s'il est comparable à la "
-            "variation du DVH avec l'amplitude, la FORME de la courbe n'est pas résolue "
-            "et son évolution ne veut rien dire, même si le signe tient.\n\n"
-            "Calcul long : deux balayages elastica complets."
-        )
-        self.btn_dvh.clicked.connect(self.on_marche_haute_resolution)
-        layout.addWidget(self.btn_dvh)
-
-        self.label_dvh = QLabel("")
-        self.label_dvh.setWordWrap(True)
-        layout.addWidget(self.label_dvh)
-
-        btn_jeu_min = QPushButton("Géométrie au jeu minimal")
-        btn_jeu_min.setToolTip("Cherche l'angle (dans ±amplitude_max) où le jeu inter-spires est le plus faible, et affiche la forme déformée à cet angle.")
-        btn_jeu_min.clicked.connect(self.on_afficher_jeu_minimal)
-        layout.addWidget(btn_jeu_min)
-
-        self.btn_calculer_anim = QPushButton("Calculer l'animation")
-        self.btn_calculer_anim.setToolTip(
-            "Calcule 41 formes déformées entre -amplitude_max et +amplitude_max "
-            "(quelques secondes à quelques dizaines de secondes selon la finesse du "
-            "maillage). Alimente le lecteur interactif de l'onglet \"Animation\" "
-            "(curseur, lecture en va-et-vient, vitesse réglable, pas-à-pas) -- "
-            "l'export GIF ci-dessous réutilise ces frames sans recalcul."
-        )
-        self.btn_calculer_anim.clicked.connect(self.on_calculer_animation)
-        layout.addWidget(self.btn_calculer_anim)
-
-        self.label_gif = QLabel("")
-        layout.addWidget(self.label_gif)
-
-        ligne = QHBoxLayout()
-        btn_valider = QPushButton("Valider par réimport")
-        btn_valider.setToolTip(
-            "Réexporte la géométrie active en DXF, la RÉIMPORTE comme un fichier "
-            "externe, et compare : détecte une perte de précision à l'export/import "
-            "(arrondi, ré-échantillonnage) -- PAS une validation de la conception "
-            "elle-même (déjà couverte par Sondage/Optimisation). Nécessite d'avoir "
-            "enregistré le projet d'abord, pour disposer d'un DXF à relire."
-        )
-        btn_valider.clicked.connect(self.on_valider_boucle_fermee)
-        ligne.addWidget(btn_valider)
-        layout.addLayout(ligne)
-
-        self.label_validation = QLabel("")
-        self.label_validation.setWordWrap(True)
-        self.label_validation.setStyleSheet("font-family: monospace;")
-        layout.addWidget(self.label_validation)
-
-        box_resultats_num = QGroupBox("Résultats numériques")
-        v_num = QVBoxLayout(box_resultats_num)
-        self.label_resultats_num = QLabel("(aucune géométrie)")
-        # Pas de police monospace ici (plus large par caractère qu'une police
-        # proportionnelle -> forçait le retour à la ligne même sur des lignes
-        # courtes dans ce panneau étroit) + hauteur minimale garantie : le
-        # texte se retrouvait tronqué (diagnostic 2026-09-25).
-        self.label_resultats_num.setWordWrap(True)
-        self.label_resultats_num.setMinimumHeight(110)
-        v_num.addWidget(self.label_resultats_num)
-
-        self.btn_verif_haute_res = QPushButton("Vérifier à haute résolution")
-        self.btn_verif_haute_res.setToolTip(
-            "Recalcule fréquence, jeu minimal, dispersion de marche, DVH et "
-            "isochronisme propre de la géométrie générée (panneau 2/3/4) avec un "
-            "maillage 4x plus fin, et affiche l'écart "
-            "avec le maillage de travail. D'après l'étude de convergence (2026-09-25), "
-            "un maillage grossier surestime le risque (jeu plus pessimiste, dispersion "
-            "plus élevée que la valeur convergée) : c'est le sens conservateur, mais "
-            "à vérifier avant de retenir un candidat final. Pour un DXF importé, "
-            "l'import se fait déjà à 3000 éléments."
-        )
-        self.btn_verif_haute_res.clicked.connect(self.on_verifier_haute_resolution)
-        v_num.addWidget(self.btn_verif_haute_res)
-        self.label_verif_haute_res = QLabel("")
-        self.label_verif_haute_res.setWordWrap(True)
-        self.label_verif_haute_res.setMinimumHeight(90)
-        v_num.addWidget(self.label_verif_haute_res)
-        layout.addWidget(box_resultats_num)
-
-        self.btn_projet = QPushButton("Enregistrer le projet...")
-        self.btn_projet.setToolTip(
-            "Écrit TOUT le projet dans un dossier portant le nom demandé, sous "
-            f"« {os.path.basename(_RACINE_RESULTS)} » :\n"
-            "  • le rapport de simulation (Word) : configuration, résultats numériques, "
-            "les quatre états du spiral (repos avec le vecteur g et les positions, "
-            "fermeture, ouverture, jeu minimal), l'orbite du centre de gravité, les "
-            "courbes de marche, d'épaisseur et de température ;\n"
-            "  • l'animation du déploiement en GIF, comme fichier autonome — Word n'anime "
-            "pas les GIF, il n'en montre que la première image ;\n"
-            "  • les fichiers de gravure : DEUX DXF si la lame est oxydée (cote de "
-            "gravure et pièce finie, qui diffèrent d'environ 4 µm), un seul sinon ;\n"
-            "  • la configuration complète en JSON, pour reproduire la simulation.\n\n"
-            "Si l'animation a déjà été calculée, ses images sont réutilisées."
-        )
-        self.btn_projet.clicked.connect(self.on_enregistrer_projet)
-        layout.addWidget(self.btn_projet)
-        self.label_projet = QLabel("")
-        self.label_projet.setWordWrap(True)
-        layout.addWidget(self.label_projet)
-
-        ligne_config = QHBoxLayout()
-        btn_load_config = QPushButton("Charger config...")
-        btn_load_config.setToolTip("Recharge une configuration complète sauvée précédemment et régénère la géométrie correspondante.")
-        btn_load_config.clicked.connect(self.on_charger_configuration)
-        ligne_config.addWidget(btn_load_config)
-        layout.addLayout(ligne_config)
-
+        box_num = QGroupBox("Résultats numériques")
+        v_num = QVBoxLayout(box_num)
+        resume = self._affichage("resultats", hauteur_min=110)
+        resume.setText("(aucune géométrie)")
+        v_num.addWidget(resume)
+        v_num.addWidget(self._bouton(
+            "haute_res", "Vérifier à haute résolution", self.on_verifier_haute_resolution,
+            "Recalcule fréquence, jeu minimal, dispersion, DVH et isochronisme propre "
+            "avec un maillage 4x plus fin, et affiche l'écart absolu ET relatif. Un "
+            "maillage grossier surestime le risque : c'est le sens conservateur, mais "
+            "à vérifier avant de retenir un candidat."))
+        v_num.addWidget(self._affichage("haute_res", hauteur_min=90))
+        v_num.addWidget(self._affichage("thermique", hauteur_min=60))
+        layout.addWidget(box_num)
         return box
 
     # ------------------------------------------------------------------
-    # Logique -- Origine
+    # Sauvegardes, une par onglet
     # ------------------------------------------------------------------
+    def _panneau_sauvegarde_forme(self) -> QGroupBox:
+        box = QGroupBox("Enregistrer la forme")
+        box.setToolTip(
+            "Écrit la CONFIGURATION seule : spec du mouvement, repère, wafer et vecteur "
+            "de conception. De quoi reconstruire exactement cette forme, sans les "
+            "résultats de calcul."
+        )
+        v = QVBoxLayout(box)
+        v.addWidget(self._bouton("sauv_forme", "Enregistrer la configuration (.json)",
+                                 self.on_enregistrer_forme))
+        v.addWidget(self._affichage("sauv_forme"))
+        return box
+
+    def _panneau_sauvegarde_calculs(self) -> QGroupBox:
+        box = QGroupBox("Enregistrer les calculs")
+        box.setToolTip(
+            "Écrit la configuration, les grandeurs calculées et la géométrie en DXF "
+            "dans un dossier horodaté de Results/. Deux DXF si la lame est oxydée : "
+            "cote de gravure et pièce finie, qui diffèrent d'environ 4 µm."
+        )
+        v = QVBoxLayout(box)
+        v.addWidget(self._bouton(
+            "sauv_calc", "Tout exporter (config, calculs, DXF, rapport, GIF)",
+            self.on_enregistrer_calculs,
+            "Écrit TOUT dans un dossier horodaté de Results/, au nom du projet :\n"
+            "  • la configuration, de quoi reconstruire la forme à l'identique ;\n"
+            "  • les grandeurs calculées, en JSON, pour comparer d'une étude à l'autre ;\n"
+            "  • la géométrie en DXF — deux fichiers si la lame est oxydée, cote de "
+            "gravure et pièce finie, qui diffèrent d'environ 4 µm ;\n"
+            "  • le rapport de simulation Word et l'animation GIF.\n\n"
+            "Un seul dossier par session, pour qu'elle se transmette ou s'archive d'un "
+            "bloc plutôt qu'en fichiers dispersés."))
+        v.addWidget(self._affichage("sauv_calc"))
+        v.addWidget(self._affichage("projet"))
+        return box
+
+    def _panneau_sauvegarde_optimisation(self) -> QGroupBox:
+        box = QGroupBox("Enregistrer l'optimisation")
+        box.setToolTip(
+            "Écrit le spiral de départ, les réglages NSGA-II, et les solutions COCHÉES "
+            "dans la table ci-dessus — chacune en DXF (gravure et fini) et en JSON, "
+            "plus un index.csv qui les récapitule avec leurs métriques."
+        )
+        v = QVBoxLayout(box)
+        v.addWidget(self._bouton("sauv_optim", "Enregistrer NSGA + solutions cochées",
+                                 self.on_enregistrer_optimisation))
+        v.addWidget(self._affichage("sauv_optim"))
+        return box
+
+    # ------------------------------------------------------------------
+    # Enregistrements : un dossier horodaté par session, dans Results/
+    # ------------------------------------------------------------------
+    def _reinitialiser_analyses(self):
+        """Efface TOUT ce qui découle de la géométrie précédente : résultats
+        numériques, tracés, animation, solutions d'optimisation, et le dossier
+        de session en cours.
+
+        Appelé quand on change d'origine — chargement d'une configuration ou
+        d'un DXF. Laisser en place la marche, le front de Pareto ou l'animation
+        de la pièce précédente est pire qu'un affichage vide : rien ne signale
+        qu'ils ne décrivent plus ce qu'on a sous les yeux, et on les lit comme
+        s'ils étaient à jour.
+        """
+        for cle in self._affichages:
+            self._dire(cle, "")
+        self._dire("resultats", "(aucune géométrie)")
+
+        for nom in ("_dernier_jeu_min_um", "_dernier_jeu_min_angle", "_dernier_dispersion",
+                    "_dernier_dvh", "_dernier_iso_basse", "_dernier_ecart_compensation",
+                    "_dernier_diag_iso", "_dernier_jeu_basse", "_dernier_diag_jeu",
+                    "_dernier_force_pivot"):
+            setattr(self, nom, None)
+
+        # Un nouveau point de départ, c'est une nouvelle étude : elle mérite
+        # son propre dossier horodaté plutôt que de venir s'ajouter au
+        # précédent.
+        self._dossier_courant = None
+
+        self.solutions_pareto = []
+        self.sondage_resultats = None
+        for table in (self.table_pareto, self.table_sondage):
+            table.setRowCount(0)
+
+        self._anim_timer.stop()
+        self._anim_angles = None
+        self._anim_frames = None
+        self._anim_sequence = []
+        self._anim_pos = 0
+        self.slider_anim.setEnabled(False)
+        for b in (self.btn_anim_play, self.btn_anim_prev, self.btn_anim_next):
+            b.setEnabled(False)
+        self.label_anim_angle.setText("angle = --")
+        self.ax_anim.clear()
+        self.canvas_anim.draw_idle()
+
+        for axes, canvas in ((("ax_marche",), "canvas_marche"),
+                              (("ax_dvh_positions", "ax_dvh_ecart"), "canvas_dvh"),
+                              (("ax_pareto",), "canvas_pareto"),
+                              (("ax_epaisseur",), "canvas_epaisseur"),
+                              (("ax_jeu_min",), "canvas_jeu_min"),
+                              (("ax_cg_xy", "ax_cg_angle", "ax_cg_barre"), "canvas_cg"),
+                              (("ax_thermique",), "canvas_thermique")):
+            for nom in axes:
+                getattr(self, nom).clear()
+            getattr(self, canvas).draw_idle()
+
+    def _origine_geometrie(self) -> str:
+        """D'où vient la géométrie active, pour l'en-tête du rapport. Un
+        rapport sans cette ligne oblige à deviner si les chiffres décrivent un
+        dessin importé ou une forme calculée."""
+        texte = self.label_dxf.text() if hasattr(self, "label_dxf") else ""
+        return texte.strip("() ") if texte else ""
+
+    def _n_points_dxf(self):
+        """Densité demandée pour les DXF, ou None pour reprendre le maillage de
+        calcul. Zéro dans l'interface veut dire « ne rien changer » : plus
+        parlant qu'une case à cocher séparée, et sans état incohérent possible
+        (case décochée mais valeur saisie)."""
+        n = self.sb_n_points_dxf.value() if hasattr(self, "sb_n_points_dxf") else 0
+        return n if n >= 8 else None
+
+    def _dossier_session(self, cle_affichage: str):
+        """Crée (une fois) le dossier de la session courante. Toutes les
+        sauvegardes d'une même session y atterrissent, pour qu'elles se
+        transmettent ou s'archivent d'un bloc."""
+        if getattr(self, "_dossier_courant", None) and os.path.isdir(self._dossier_courant):
+            return self._dossier_courant
+        try:
+            self._dossier_courant = sauvegarde.dossier_session(
+                _RACINE_RESULTS, self.ed_projet.text())
+        except ValueError as e:
+            QMessageBox.warning(self, "Enregistrement", str(e))
+            return None
+        return self._dossier_courant
+
+    def _annoncer(self, cle: str, dossier: str, chemins):
+        noms = [os.path.basename(c) for c in chemins]
+        self._dire_ecourte(cle, f"{len(noms)} fichier(s) dans "
+                                f"{os.path.basename(dossier)} : {', '.join(noms)}")
+        self._infobulle(cle, dossier + "\n" + "\n".join(noms))
+
+    def on_enregistrer_forme(self):
+        """Onglet 1 : la configuration seule."""
+        self._synchroniser_spec()
+        if self.base is None:
+            QMessageBox.information(self, "Enregistrement",
+                                     "Générez d'abord une géométrie (panneau 2).")
+            return
+        dossier = self._dossier_session("sauv_forme")
+        if dossier is None:
+            return
+        chemin = sauvegarde.enregistrer_configuration(
+            dossier, self.spec, self.base, self.bornes, self.hyperparams,
+            self._reglage_echappement())
+        self._annoncer("sauv_forme", dossier, [chemin])
+
+    def on_enregistrer_calculs(self):
+        """Onglet 2 : configuration, grandeurs calculées et DXF."""
+        self._synchroniser_spec()
+        if self.geom is None:
+            QMessageBox.information(self, "Enregistrement",
+                                     "Générez ou chargez d'abord une géométrie.")
+            return
+        dossier = self._dossier_session("sauv_calc")
+        if dossier is None:
+            return
+        self._dire("sauv_calc", "Calcul en cours...")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
+        try:
+            r_min = float(self.geom.rayon()[0])
+            resultat = analyser_marches(
+                self.geom, r_min, self.spec.freq_cible, self.spec.inertie_balancier,
+                amplitudes_deg=self._amplitudes_analyse(),
+                reglage_echappement=self._reglage_echappement(),
+                positions=positions_verticales(self.chk_cote_rouage.isChecked()),
+                pas_balayage_deg=self.sb_pas_balayage.value(),
+                jeu_goupilles_um=self._jeu_goupilles_um())
+            diag = resultat["diag_orbite"]
+            # On n'enregistre PAS le résultat brut : il porte des tableaux de
+            # travail (orbite complète, balayage) qui pèsent lourd et ne se
+            # relisent pas. Seules les grandeurs qu'on compare d'une étude à
+            # l'autre sont écrites.
+            analyse = {
+                "projet": self.ed_projet.text(),
+                "frequence_hz": frequence_propre(self.geom, self.spec.inertie_balancier),
+                "frequence_cible_hz": self.spec.freq_cible,
+                "masse_ug": self.geom.masse_totale(RHO_SILICIUM) * 1e9,
+                "longueur_mm": self.geom.longueur,
+                "longueur_active_mm": self.geom.partie_active().longueur,
+                "epaisseur_min_um": self.geom.epaisseur_finie.min() * 1000.0,
+                "epaisseur_max_um": self.geom.epaisseur_finie.max() * 1000.0,
+                "epaisseur_oxyde_um": self.geom.epaisseur_oxyde * 1000.0,
+                "plan_cristallin": self.spec.plan_cristallin,
+                "orientation_cristal_deg": self.spec.orientation_cristal_deg,
+                "jeu_min_um": float(diag["jeu_min_mm"]) * 1000.0,
+                "jeu_min_angle_deg": float(diag["angle_jeu_min_deg"]),
+                "dispersion_gravite_s_j": resultat["dispersion_gravite"],
+                "dvh_reference_s_j": resultat["dvh_reference"],
+                "dvh_max_s_j": resultat["dvh_max"],
+                "sensibilite_module_s_j": resultat["sensibilite_module_reference"],
+                "sensibilite_phase_deg": resultat["sensibilite_phase_deg"],
+                "iso_amplitude_basse_s_j": resultat["iso_amplitude_basse"],
+                "ecart_compensation_s_j": resultat["ecart_compensation"],
+                "amplitudes_deg": resultat["amplitudes_deg"],
+                "marches_par_position_s_j": {k: v for k, v in resultat["totales"].items()},
+            }
+            chemins = [sauvegarde.enregistrer_analyse(dossier, analyse)]
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        # Le rapport écrit lui-même la configuration, les DXF et le GIF : on ne
+        # les double pas ici. Il reste séparé parce qu'il est long, et que sa
+        # progression doit rester visible.
+        chemins += self._ecrire_rapport(dossier)
+        self._annoncer("sauv_calc", dossier, [c for c in chemins if c])
+
+    def _ecrire_rapport(self, dossier: str) -> list:
+        """Rapport Word, GIF, DXF et configuration, dans le dossier de session.
+        Retourne les chemins écrits, ou une liste vide en cas d'échec."""
+        frames = None
+        if self._anim_frames is not None and self._anim_angles is not None:
+            frames = (self._anim_angles, self._anim_frames)
+
+        def progression(texte):
+            self._dire("projet", texte)
+            QApplication.processEvents()
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            fichiers = rapport.enregistrer_projet(
+                os.path.dirname(dossier), os.path.basename(dossier),
+                self.geom, self.spec, self.base,
+                bornes=self.bornes, hyperparametres=self.hyperparams,
+                reglage_echappement=self._reglage_echappement(),
+                reglage_thermique=self._reglage_thermique(),
+                amplitudes_deg=self._amplitudes_analyse(),
+                pas_balayage_deg=self.sb_pas_balayage.value(),
+                jeu_goupilles_um=self._jeu_goupilles_um(),
+                r_min=float(self.geom.rayon()[0]),
+                frames_animation=frames, n_frames_gif=31,
+                origine=self._origine_geometrie() if hasattr(self, "_origine_geometrie") else "",
+                ecraser=True,          # le dossier de session nous appartient
+                n_points_dxf=self._n_points_dxf(), progression=progression)
+        except Exception as e:
+            QMessageBox.critical(self, "Rapport", str(e))
+            self._dire("projet", "(rapport : échec)")
+            return []
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._dire("projet", "")
+        chemins = []
+        for v in fichiers.values():
+            chemins += v if isinstance(v, (list, tuple)) else [v]
+        return [c for c in chemins if isinstance(c, str)]
+
+    def _solutions_cochees(self) -> list:
+        coches = []
+        for i in range(self.table_pareto.rowCount()):
+            case = self.table_pareto.item(i, 0)
+            if case is not None and case.checkState() == Qt.Checked:
+                coches.append(i)
+        return coches
+
+    def on_enregistrer_optimisation(self):
+        """Onglet 3 : réglages NSGA-II, spiral de départ, et les solutions
+        cochées — chacune en DXF et en JSON, plus un index.csv."""
+        self._synchroniser_spec()
+        if not self.solutions_pareto:
+            QMessageBox.information(self, "Enregistrement",
+                                     "Lancez d'abord une optimisation.")
+            return
+        rangs = self._solutions_cochees()
+        if not rangs:
+            QMessageBox.information(
+                self, "Enregistrement",
+                "Aucune solution cochée. Cochez dans la première colonne de la table "
+                "celles dont vous voulez les fichiers de gravure.")
+            return
+        dossier = self._dossier_session("sauv_optim")
+        if dossier is None:
+            return
+        self._dire("sauv_optim", f"Export de {len(rangs)} solution(s)...")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
+        try:
+            chemins = [sauvegarde.enregistrer_configuration(
+                dossier, self.spec, self.base, self.bornes, self.hyperparams,
+                self._reglage_echappement())]
+            chemins.append(sauvegarde.enregistrer_analyse(dossier, {
+                "projet": self.ed_projet.text(),
+                "hyperparametres_ga": asdict(self.hyperparams),
+                "bornes": asdict(self.bornes),
+                "echappement": asdict(self._reglage_echappement()),
+                "n_solutions": len(self.solutions_pareto),
+                "solutions_exportees": [r + 1 for r in rangs],
+            }, nom="nsga"))
+
+            solutions = []
+            for r in rangs:
+                sol = self.solutions_pareto[r]
+                params = params_depuis_vecteur(sol["x"], self.base)
+                geom = construire_geometrie(
+                    params, reglage_thermique=self._reglage_thermique())
+                solutions.append({
+                    "rang": r + 1,
+                    "geometrie": geom,
+                    "dispersion": sol.get("dispersion"),
+                    "dvh": sol.get("dvh"),
+                    "jeu_um": (sol.get("jeu") or 0.0) * 1000.0,
+                    "ecart_compensation": sol.get("ecart_compensation"),
+                    "oxyde_um": geom.epaisseur_oxyde * 1000.0,
+                    "frequence_hz": frequence_propre(geom, self.spec.inertie_balancier),
+                })
+            ecrits = sauvegarde.enregistrer_solutions(
+                dossier, solutions, n_points_dxf=self._n_points_dxf())
+            for liste in ecrits.values():
+                chemins += liste
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._annoncer("sauv_optim", dossier, chemins)
+
     def _maj_orientation_cristal(self):
         """L'orientation n'a de sens que sur un plan anisotrope : sur un (111)
         le module est le même dans toutes les directions, le champ est donc
@@ -1398,8 +1747,7 @@ class LaboSpiralApp(QMainWindow):
     def on_init_archimede(self):
         self._rafraichir_base_depuis_spec()
         try:
-            geom, diag = construire_geometrie(self.base, return_diagnostics=True,
-                                              reglage_thermique=self._reglage_thermique())
+            geom, diag = construire_geometrie(self.base, return_diagnostics=True)
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
             return
@@ -1426,6 +1774,7 @@ class LaboSpiralApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Erreur d'import", str(e))
             return
+        self._reinitialiser_analyses()
         self.geom = geom
         _texte_ecourte(self.label_dxf, chemin.split("/")[-1])
         r = geom.rayon()
@@ -1440,45 +1789,10 @@ class LaboSpiralApp(QMainWindow):
             "une géométrie, pas à en analyser une déjà importée.",
         )
 
-    def on_sauver_spec(self):
-        chemin, _ = QFileDialog.getSaveFileName(self, "Sauver la spec", "", "JSON (*.json)")
-        if chemin:
-            self._lire_spec_depuis_formulaire().sauvegarder(_assurer_extension(chemin, ".json"))
-
-    def on_charger_spec(self):
-        chemin, _ = QFileDialog.getOpenFileName(self, "Charger une spec", "", "JSON (*.json)")
-        if not chemin:
-            return
-        self.spec = SpecMouvement.charger(chemin)
-        self.sb_r_min.setValue(self.spec.r_min)
-        self.sb_r_max.setValue(self.spec.r_max)
-        self.sb_n_tours.setValue(self.spec.n_tours_reels)
-        self.sb_n_tours_fictifs.setValue(self.spec.n_tours_fictifs)
-        self.sb_hauteur.setValue(self.spec.hauteur_h)
-        self.sb_freq.setValue(self.spec.freq_cible)
-        self.sb_inertie.setValue(_inertie_affichee(self.spec.inertie_balancier))
-        self.sb_jeu_min.setValue(self.spec.jeu_min_spires)
-        self.sb_amplitude_max.setValue(self.spec.amplitude_max)
-        self.chk_cote_rouage.setChecked(self.spec.vue_cote_rouage)
-        self.sb_angle_echappement.setValue(self.spec.angle_echappement_deg)
-        self.chk_sens_trigo.setChecked(self.spec.sens_trigonometrique)
-        self.chk_collet_cote_ancre.setChecked(self.spec.collet_cote_ancre)
-        self.cb_plan.setCurrentIndex(max(0, self.cb_plan.findData(self.spec.plan_cristallin)))
-        self.sb_orientation_cristal.setValue(self.spec.orientation_cristal_deg)
-        self._maj_orientation_cristal()
-        # Synchronise la fenêtre d'analyse (sondage/optimisation) sur la spec
-        # chargée -- sinon on peut se retrouver à optimiser pour une
-        # amplitude différente de celle réellement visée par le mouvement.
-        self.sb_amp_max.setValue(self.spec.amplitude_max)
-
-    # ------------------------------------------------------------------
-    # Logique -- Paramètres
-    # ------------------------------------------------------------------
     def on_generer_geometrie(self):
         self._rafraichir_base_depuis_spec()
         try:
-            geom, diag = construire_geometrie(self.base, return_diagnostics=True,
-                                              reglage_thermique=self._reglage_thermique())
+            geom, diag = construire_geometrie(self.base, return_diagnostics=True)
         except ValueError as e:
             QMessageBox.warning(self, "Erreur", str(e))
             return
@@ -1506,10 +1820,6 @@ class LaboSpiralApp(QMainWindow):
             f"phillips_plausibilite : {diag['phillips_ratio_plausibilite']:.2f}  (repère ~1.0, pas une contrainte)",
             f"freq avant scaling    : {diag['freq_avant_scaling_hz']:.3f} Hz  (beta={diag['beta_scaling']:.3f})",
         ]
-        if diag.get("oxydation_active"):
-            lignes.append(
-                f"oxyde thermique       : {diag['epaisseur_oxyde_um']:.3f} µm  "
-                f"(lame +{diag['croissance_lame_um']:.2f} µm à la gravure)")
         if raquette:
             lignes.append(
                 f"arc de raquette       : parcours {diag['raquette_arc_deg']:.2f}° "
@@ -1618,7 +1928,7 @@ class LaboSpiralApp(QMainWindow):
         (boutons dédiés) plutôt que recalculés à chaque tracé."""
         self._synchroniser_spec()
         if self.geom is None:
-            self.label_resultats_num.setText("(aucune géométrie)")
+            self._dire("resultats", "(aucune géométrie)")
             return
 
         freq = frequence_propre(self.geom, self.spec.inertie_balancier)
@@ -1684,6 +1994,9 @@ class LaboSpiralApp(QMainWindow):
                 f"(marche = A·cos(θ − φ) ; une rotation change φ, pas A)")
 
         if self._dernier_force_pivot is not None:
+            # Treize fois le poids du spiral : c'est cette force, et non la
+            # poise, qui justifie la règle du nombre entier de spires. L'axe
+            # est une DROITE, rendu modulo 180° comme le point de comptage.
             module, axe = self._dernier_force_pivot
             comptage = angle_point_comptage(self.geom)
             ecart = (axe - comptage + 90.0) % 180.0 - 90.0
@@ -1709,76 +2022,12 @@ class LaboSpiralApp(QMainWindow):
                               f"{self._dernier_diag_iso.get('raison', 'inconnue')}")
         else:
             lignes.append("Compensation d'échappement : non calculée")
-        self.label_resultats_num.setText("\n".join(lignes))
-
-    def _tracer_orbite_cg(self, diag_orbite: dict):
-        """Trajectoire du centre de gravité pendant le déploiement.
-
-        C'est la grandeur que l'optimisation minimise : en position verticale,
-        le poids du spiral exerce sur l'axe un couple proportionnel au
-        DÉPLACEMENT du centre de gravité, et c'est sa variation au cours de
-        l'oscillation -- pas sa position moyenne -- qui fait l'erreur de
-        marche. Un spiral parfaitement réglé aurait une orbite réduite à un
-        point."""
-        angles = diag_orbite["angles_deg"]
-        xc, yc = diag_orbite["x_cg_mm"] * 1000.0, diag_orbite["y_cg_mm"] * 1000.0
-
-        self.ax_cg_xy.clear()
-        self.ax_cg_angle.clear()
-        trace = self.ax_cg_xy.scatter(xc, yc, c=angles, cmap="coolwarm", s=14, zorder=3)
-        self.ax_cg_xy.plot(xc, yc, "-", color=theme.gris(0.6), lw=0.8, zorder=2)
-        self.ax_cg_xy.plot(xc.mean(), yc.mean(), "+", color=theme.encre(), ms=12, zorder=4)
-        etendue = float(np.hypot(xc - xc.mean(), yc - yc.mean()).max())
-        # « equal » avec adjustable="datalim" : l'échelle reste identique en x
-        # et en y -- la forme de l'orbite n'est donc pas déformée, ce qui est
-        # tout l'intérêt de cette vue -- mais c'est la PLAGE DE DONNÉES qui
-        # s'étend pour remplir le cadre, au lieu du cadre qui rétrécit pour
-        # coller aux données. Sans cela, une orbite ronde réduisait le tracé à
-        # 274 px de large quand le panneau en offrait 1079, et le défaut
-        # empirait à mesure que l'optimisation arrondissait l'orbite.
-        self.ax_cg_xy.set_aspect("equal", adjustable="datalim")
-        # Limites CARRÉES et centrées sur l'orbite : l'extension faite par
-        # datalim part des limites en place, donc les fixer soi-même garantit
-        # que l'orbite reste au milieu du cadre avec une marge régulière,
-        # quelle que soit sa forme.
-        demi = max(float(np.ptp(xc)), float(np.ptp(yc)), 1e-6) * 0.6
-        cx, cy = 0.5 * (xc.max() + xc.min()), 0.5 * (yc.max() + yc.min())
-        self.ax_cg_xy.set_xlim(cx - demi, cx + demi)
-        self.ax_cg_xy.set_ylim(cy - demi, cy + demi)
-        self.ax_cg_xy.set_xlabel("x du CG (µm)")
-        self.ax_cg_xy.set_ylabel("y du CG (µm)")
-        self.ax_cg_xy.grid(True, linestyle=":", alpha=0.5)
-        self.ax_cg_xy.set_title(
-            f"Orbite du CG -- rayon max {etendue:.1f} µm\n"
-            f"décentrage moyen {np.hypot(xc.mean(), yc.mean()):.1f} µm", fontsize=9)
-        self.ax_cg_barre.clear()
-        barre = self.fig_cg.colorbar(trace, cax=self.ax_cg_barre)
-        barre.set_label("angle du balancier (°)", fontsize=8)
-        barre.ax.tick_params(labelsize=7)
-
-        self.ax_cg_angle.plot(angles, xc - xc.mean(), "o-", ms=3, label="x (écart à la moyenne)")
-        self.ax_cg_angle.plot(angles, yc - yc.mean(), "s-", ms=3, label="y (écart à la moyenne)")
-        self.ax_cg_angle.axvline(0, color=theme.encre(), lw=0.8)
-        self.ax_cg_angle.set_xlabel("Angle du balancier (°)")
-        self.ax_cg_angle.set_ylabel("Déplacement du CG (µm)")
-        self.ax_cg_angle.grid(True, linestyle=":", alpha=0.5)
-        self.ax_cg_angle.legend(fontsize=8)
-        self.ax_cg_angle.set_title(
-            f"{len(angles)} positions de déploiement calculées", fontsize=9)
-        self.fig_cg.tight_layout()
-        self.canvas_cg.draw_idle()
+        self._dire("resultats", "\n".join(lignes))
 
     def _tracer_epaisseur(self):
         self.ax_epaisseur.clear()
         if self.geom is not None:
-            if self.geom.epaisseur_oxyde > 0.0:
-                self.ax_epaisseur.plot(self.geom.s, self.geom.epaisseur_finie * 1000.0, "-",
-                                        label="lame finie (oxyde compris)")
-                self.ax_epaisseur.plot(self.geom.s, self.geom.epaisseur * 1000.0, "--",
-                                        color=theme.gris(0.5), label="cote de gravure")
-                self.ax_epaisseur.legend(fontsize=8)
-            else:
-                self.ax_epaisseur.plot(self.geom.s, self.geom.epaisseur * 1000.0, "-")
+            self.ax_epaisseur.plot(self.geom.s, self.geom.epaisseur * 1000.0, "-")
             self.ax_epaisseur.set_xlabel("Longueur depuis la virole/collet (mm)")
             self.ax_epaisseur.set_ylabel("Épaisseur (µm)")
             self.ax_epaisseur.grid(True, linestyle=":", alpha=0.6)
@@ -1826,7 +2075,6 @@ class LaboSpiralApp(QMainWindow):
             n_echantillons=self.sb_sondage_n.value(), seed=self.sb_sondage_seed.value(),
             pas_balayage_deg=self.sb_pas_balayage.value(),
             reglage_echappement=self._reglage_echappement(),
-            reglage_thermique=self._reglage_thermique(),
         )
         self._thread.signal_termine.connect(self.on_sondage_termine)
         self._thread.start()
@@ -1861,8 +2109,7 @@ class LaboSpiralApp(QMainWindow):
         idx = lignes[0].row()
         x = self.sondage_resultats["classement"][idx]["x"]
         self.base = params_depuis_vecteur(x, self.base)
-        geom, diag = construire_geometrie(self.base, return_diagnostics=True,
-                                              reglage_thermique=self._reglage_thermique())
+        geom, diag = construire_geometrie(self.base, return_diagnostics=True)
         self.geom = geom
         self._afficher_diagnostics(diag)
         self._tracer_geometrie()
@@ -1883,9 +2130,6 @@ class LaboSpiralApp(QMainWindow):
         self._thread = OptimisationThread(
             self.base, self.bornes, self.hyperparams, self.spec.jeu_min_spires,
             self._amplitudes_analyse(), x0=x0,
-            pas_balayage_deg=self.sb_pas_balayage.value(),
-            reglage_echappement=self._reglage_echappement(),
-            reglage_thermique=self._reglage_thermique(),
         )
         self._thread.signal_progres.connect(self.on_optimisation_progres)
         self._thread.signal_termine.connect(self.on_optimisation_terminee)
@@ -1924,11 +2168,17 @@ class LaboSpiralApp(QMainWindow):
 
         self.table_pareto.setRowCount(len(self.solutions_pareto))
         for i, sol in enumerate(self.solutions_pareto):
-            self.table_pareto.setItem(i, 0, QTableWidgetItem(f"{sol['dispersion']:.2f}"))
-            self.table_pareto.setItem(i, 1, QTableWidgetItem(f"{sol['jeu']*1000:.1f}"))
+            case = QTableWidgetItem()
+            case.setFlags((case.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable)
+            case.setCheckState(Qt.Unchecked)
+            case.setToolTip("Cocher pour exporter cette géométrie en DXF.")
+            self.table_pareto.setItem(i, 0, case)
+            self.table_pareto.setItem(i, 1, QTableWidgetItem(f"{sol['dispersion']:.2f}"))
+            self.table_pareto.setItem(i, 2, QTableWidgetItem(f"{sol['jeu']*1000:.1f}"))
             ecart = sol.get("ecart_compensation")
             self.table_pareto.setItem(
-                i, 2, QTableWidgetItem("--" if ecart is None else f"|{ecart:.2f}|"))
+                i, 3, QTableWidgetItem("--" if ecart is None else f"|{ecart:.2f}|"))
+        self.table_pareto.resizeColumnToContents(0)
         self._tracer_pareto()
 
     def _tracer_pareto(self):
@@ -1950,7 +2200,7 @@ class LaboSpiralApp(QMainWindow):
         idx = lignes[0].row()
         sol = self.solutions_pareto[idx]
         self.base = params_depuis_vecteur(sol["x"], self.base)
-        self.geom = construire_geometrie(self.base, reglage_thermique=self._reglage_thermique())
+        self.geom = construire_geometrie(self.base)
         self._tracer_geometrie()
 
     # ------------------------------------------------------------------
@@ -2020,6 +2270,15 @@ class LaboSpiralApp(QMainWindow):
         self._dernier_force_pivot = axe_force_pivot(
             self.geom, r_min, self.spec.amplitude_max)
         self._afficher_resultats_numeriques()
+
+        # Le DVH suit automatiquement : son incertitude de maillage est
+        # beaucoup plus lourde en relatif que celle de la dispersion, et lire
+        # l'une sans l'autre donne une confiance que le chiffre ne mérite pas.
+        # Silencieux : sur une géométrie importée, le raffinement n'est pas
+        # possible et cela ne doit pas interrompre le calcul de marche par une
+        # boîte de dialogue.
+        self.on_marche_haute_resolution(silencieux=True)
+        self.tabs.setCurrentWidget(self.canvas_marche.parentWidget())
 
     def on_analyser_thermique(self):
         """Tenue en température de la géométrie active, plus l'étude de
@@ -2104,150 +2363,69 @@ class LaboSpiralApp(QMainWindow):
         lignes.append(
             "  Les coefficients étant de littérature, l'épaisseur doit être calée "
             "par la mesure : le calcul donne la cible, pas la certitude.")
-        self.label_validation.setText("\n".join(lignes))
+        self._dire("thermique", "\n".join(lignes))
 
-    def _origine_geometrie(self) -> str:
-        """D'où vient la géométrie active, pour l'en-tête du rapport. Le libellé
-        du panneau 1 vaut « (aucun) » tant qu'aucun DXF n'a été chargé, ce qui
-        ne renseigne pas : on lui substitue alors la vraie origine."""
-        texte = self.label_dxf.toolTip() or self.label_dxf.text()
-        if not texte or texte.startswith("(aucun"):
-            return "générée paramétriquement"
-        return texte.strip("()")
+    def _tracer_orbite_cg(self, diag_orbite: dict):
+        """Orbite du centre de gravité : la grandeur que l'optimisation
+        minimise réellement.
 
-    def _n_points_dxf(self):
-        """Densité demandée pour les DXF, ou None pour reprendre le maillage de
-        calcul. Zéro dans l'interface veut dire « ne rien changer » : c'est plus
-        parlant qu'une case à cocher séparée, et ça évite un état incohérent
-        (case décochée mais valeur saisie)."""
-        n = self.sb_n_points_dxf.value() if hasattr(self, "sb_n_points_dxf") else 0
-        return n if n >= 8 else None
+        Deux vues plutôt qu'une. La TRAJECTOIRE dans le plan dit l'essentiel —
+        c'est son étendue, non sa position moyenne, qui crée l'erreur de marche
+        en position verticale. Les deux COMPOSANTES en fonction de l'angle du
+        balancier montrent les accidents locaux que la trajectoire seule
+        masque : un repli, un point de rebroussement, une portion où le CG
+        repart en arrière.
+        """
+        x = np.asarray(diag_orbite["x_cg_mm"], dtype=float) * 1000.0   # µm
+        y = np.asarray(diag_orbite["y_cg_mm"], dtype=float) * 1000.0
+        angles = np.asarray(diag_orbite["angles_deg"], dtype=float)
 
-    def on_enregistrer_projet(self):
-        """Écrit tout le projet dans un dossier de Results/ : rapport Word,
-        animation, fichiers de gravure et configuration."""
-        self._synchroniser_spec()
-        if self.geom is None:
-            QMessageBox.information(self, "Projet", "Générez ou chargez d'abord une géométrie.")
-            return
-        nom, ok = QInputDialog.getText(
-            self, "Enregistrer le projet",
-            f"Nom du projet (un dossier de ce nom sera créé sous {_RACINE_RESULTS}) :",
-            text=datetime.now().strftime("spiral_%Y%m%d_%H%M"))
-        if not ok or not nom.strip():
-            return
+        self.ax_cg_xy.clear()
+        self.ax_cg_barre.clear()
+        points = self.ax_cg_xy.scatter(x, y, c=angles, cmap="coolwarm", s=8, zorder=3)
+        self.ax_cg_xy.plot(x, y, "-", color=theme.gris(0.6), lw=0.6, zorder=2)
+        self.fig_cg.colorbar(points, cax=self.ax_cg_barre, label="angle du balancier (°)")
+        # Aspect égal mais limites ÉTIRABLES, et cadrage carré centré sur
+        # l'orbite : une orbite quasi circulaire laissée à l'aspect strict se
+        # réduisait à une bande de 274 px de large, le reste de la figure étant
+        # perdu en marges.
+        self.ax_cg_xy.set_aspect("equal", adjustable="datalim")
+        cx, cy = 0.5 * (x.min() + x.max()), 0.5 * (y.min() + y.max())
+        demi = max(x.max() - x.min(), y.max() - y.min(), 1e-6) * 0.6
+        self.ax_cg_xy.set_xlim(cx - demi, cx + demi)
+        self.ax_cg_xy.set_ylim(cy - demi, cy + demi)
+        self.ax_cg_xy.set_xlabel("x du centre de gravité (µm)")
+        self.ax_cg_xy.set_ylabel("y (µm)")
+        self.ax_cg_xy.grid(True, linestyle=":", alpha=0.5)
+        self.ax_cg_xy.set_title(
+            f"Orbite du centre de gravité — étendue "
+            f"{x.max()-x.min():.1f} x {y.max()-y.min():.1f} µm", fontsize=9)
 
-        # Les images de l'animation, si elles ont déjà été calculées, évitent
-        # autant de résolutions elastica et garantissent que le rapport montre
-        # exactement ce que l'utilisateur a sous les yeux.
-        frames = None
-        if self._anim_frames is not None and self._anim_angles is not None:
-            frames = (self._anim_angles, self._anim_frames)
-
-        def ecrire(ecraser):
-            return rapport.enregistrer_projet(
-                _RACINE_RESULTS, nom, self.geom, self.spec, self.base,
-                bornes=self.bornes, hyperparametres=self.hyperparams,
-                reglage_echappement=self._reglage_echappement(),
-                reglage_thermique=self._reglage_thermique(),
-                amplitudes_deg=self._amplitudes_analyse(),
-                pas_balayage_deg=self.sb_pas_balayage.value(),
-                jeu_goupilles_um=self._jeu_goupilles_um(),
-                r_min=float(self.geom.rayon()[0]),
-                frames_animation=frames, n_frames_gif=31,
-                origine=self._origine_geometrie(), ecraser=ecraser,
-                n_points_dxf=self._n_points_dxf(), progression=progression)
-
-        def progression(texte):
-            self.label_projet.setText(texte)
-            QApplication.processEvents()
-
-        self._definir_bouton_actif(self.btn_projet, True, "Enregistrement...")
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            try:
-                fichiers = ecrire(False)
-            except FileExistsError as e:
-                # Écraser silencieusement une simulation précédente serait une
-                # perte difficile à rattraper : on demande.
-                QApplication.restoreOverrideCursor()
-                reponse = QMessageBox.question(
-                    self, "Projet existant",
-                    f"Le dossier existe déjà et n'est pas vide :\n{e}\n\nÉcraser son contenu ?",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-                if reponse != QMessageBox.Yes:
-                    self.label_projet.setText("(annulé)")
-                    return
-                QApplication.setOverrideCursor(Qt.WaitCursor)
-                fichiers = ecrire(True)
-        except Exception as e:
-            self.label_projet.setText("(échec)")
-            QMessageBox.critical(self, "Projet", f"Échec de l'enregistrement :\n{e}")
-            return
-        finally:
-            QApplication.restoreOverrideCursor()
-            self._definir_bouton_actif(self.btn_projet, False)
-
-        # Le DXF le plus récent alimente la validation par réimport.
-        self._dernier_export = fichiers["dxf"][-1]
-        noms = [os.path.basename(fichiers["rapport"]), os.path.basename(fichiers["gif"])]
-        noms += [os.path.basename(c) for c in fichiers["dxf"]]
-        if "configuration" in fichiers:
-            noms.append(os.path.basename(fichiers["configuration"]))
-        _texte_ecourte(self.label_projet,
-                        f"Projet enregistré ({len(noms)} fichiers) : " + ", ".join(noms))
-        self.label_projet.setToolTip(fichiers["dossier"] + "\n" + "\n".join(noms))
-
-    def on_valider_boucle_fermee(self):
-        """Réexporte la géométrie active en DXF (déjà fait par "Exporter en
-        DXF..."), la réimporte comme un fichier externe quelconque, et
-        compare : ça vérifie que le pipeline d'export/import (ray-casting,
-        ré-échantillonnage, cf. dxf_io.py) ne dégrade pas la géométrie -- une
-        vérification de FIDÉLITÉ NUMÉRIQUE, pas une validation physique
-        (la physique elle-même est déjà validée par Sondage/Optimisation)."""
-        self._synchroniser_spec()
-        chemin = getattr(self, "_dernier_export", None)
-        if chemin is None or self.geom is None:
-            QMessageBox.information(self, "Validation", "Exportez d'abord un DXF.")
-            return
-        try:
-            geom_reimporte = dxf_io.charger_dxf(chemin, n_elements=self.geom.n, hauteur_h=self.geom.hauteur)
-        except Exception as e:
-            QMessageBox.critical(self, "Erreur de réimport", str(e))
-            return
-
-        r_avant, r_apres = self.geom.rayon(), geom_reimporte.rayon()
-        ecart_r_min = abs(r_avant.min() - r_apres.min()) * 1000
-        ecart_r_max = abs(r_avant.max() - r_apres.max()) * 1000
-
-        amplitude_max = self.spec.amplitude_max
-        pas = self.sb_pas_balayage.value()
-        _, _, _, jeu_avant, _ = balayage_angulaire(self.geom, float(r_avant[0]), amplitude_max, pas)
-        _, _, _, jeu_apres, _ = balayage_angulaire(geom_reimporte, float(r_apres[0]), amplitude_max, pas)
-
-        self.label_validation.setText(
-            f"Écart r_min après réimport : {ecart_r_min:.2f} µm\n"
-            f"Écart r_max après réimport : {ecart_r_max:.2f} µm\n"
-            f"Jeu min avant export : {jeu_avant.min()*1000:.1f} µm\n"
-            f"Jeu min après réimport : {jeu_apres.min()*1000:.1f} µm"
-        )
+        self.ax_cg_angle.clear()
+        self.ax_cg_angle.plot(angles, x, "-", color="tab:blue", lw=1.0, label="x")
+        self.ax_cg_angle.plot(angles, y, "-", color="tab:red", lw=1.0, label="y")
+        self.ax_cg_angle.axvline(0, color=theme.encre(), lw=0.8)
+        self.ax_cg_angle.set_xlabel("angle du balancier (°)")
+        self.ax_cg_angle.set_ylabel("position du CG (µm)")
+        self.ax_cg_angle.grid(True, linestyle=":", alpha=0.5)
+        self.ax_cg_angle.legend(fontsize=8)
+        self.fig_cg.tight_layout()
+        self.canvas_cg.draw_idle()
 
     def _metriques_geometrie(self, geom, r_min: float = None):
         """(freq_hz, jeu_min_um, dispersion_s_j, iso_amplitude_basse_s_j,
         dvh_s_j) d'une géométrie, en UN seul balayage elastica (marche, jeu,
         isochronisme propre et DVH partagent le même).
 
-        Le DVH est renvoyé à l'amplitude de référence, signé : c'est le chiffre
-        que le COSC note, et celui qui doit être vérifié convergé au même titre
-        que la dispersion -- il est plus petit qu'elle d'un facteur deux au
-        moins, donc plus exposé au bruit de discrétisation.
+        r_min est passé EXPLICITEMENT par l'appelant plutôt que déduit de la
+        géométrie : deux géométries comparées entre elles (maillage de travail
+        contre maillage fin) doivent partir de la même condition limite, sinon
+        on compare deux calculs qui ne diffèrent pas que par le maillage.
 
-        r_min : rayon de collet imposé comme condition limite. Passé
-        EXPLICITEMENT par l'appelant plutôt que déduit de la géométrie, pour
-        que deux géométries comparées entre elles (maillage de travail vs
-        maillage fin) utilisent forcément la même condition limite -- sans
-        quoi on compare deux calculs qui ne diffèrent pas que par le maillage.
-        Par défaut : le rayon effectif du premier point."""
+        Le DVH est rendu à l'amplitude de référence, signé : c'est le chiffre
+        que le COSC note, et il doit être vérifié convergé au même titre que la
+        dispersion — il est plus petit qu'elle d'un facteur deux au moins, donc
+        plus exposé au bruit de discrétisation."""
         if r_min is None:
             r_min = float(geom.rayon()[0])
         resultat = analyser_marches(
@@ -2313,7 +2491,7 @@ class LaboSpiralApp(QMainWindow):
         nom_plat = next(iter(POSITIONS_HORIZONTALES))
         return totales["6H"], totales[nom_plat], resultat["dvh"], resultat
 
-    def on_marche_haute_resolution(self):
+    def on_marche_haute_resolution(self, silencieux: bool = False):
         """Marche en 6H et à plat sur toute la plage d'amplitude, au maillage
         de travail et à un maillage raffiné, plus leur différence (le DVH).
 
@@ -2321,7 +2499,13 @@ class LaboSpiralApp(QMainWindow):
         réglage, c'est son ÉVOLUTION avec l'amplitude, et c'est justement elle
         que le bruit de discrétisation déforme en premier."""
         self._synchroniser_spec()
-        if not self._geometrie_generee("Marche à haute résolution"):
+        if self.geom is None or self.base is None or self.geom.n != self.base.n_elements:
+            # Géométrie importée : pas de vecteur de conception à reconstruire
+            # plus fin. On le dit, sans interrompre un enchaînement.
+            self._dire("dvh", "DVH à haute résolution : indisponible sur une géométrie "
+                              "importée (pas de paramétrage à raffiner).")
+            if not silencieux:
+                self._geometrie_generee("Marche à haute résolution")
             return
 
         base_fine = self._base_raffinee()
@@ -2331,9 +2515,9 @@ class LaboSpiralApp(QMainWindow):
         amplitudes = np.arange(float(amplitudes.min()), float(amplitudes.max()) + 1e-6, 10.0)
         r_min = float(self.geom.rayon()[0])
 
-        self.label_dvh.setText(f"Calcul à {self.base.n_elements} puis "
+        self._dire("dvh", f"Calcul à {self.base.n_elements} puis "
                                 f"{base_fine.n_elements} éléments...")
-        self._definir_bouton_actif(self.btn_dvh, True, "Calcul...")
+        self._occuper("dvh", True, "Calcul...")
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
         try:
@@ -2346,7 +2530,7 @@ class LaboSpiralApp(QMainWindow):
             return
         finally:
             QApplication.restoreOverrideCursor()
-            self._definir_bouton_actif(self.btn_dvh, False,
+            self._occuper("dvh", False,
                                         "Marche 6H / à plat à haute résolution")
 
         n0, n1 = self.base.n_elements, base_fine.n_elements
@@ -2406,7 +2590,7 @@ class LaboSpiralApp(QMainWindow):
                 "de l'évolution est lisible, pas son ampleur.")
         else:
             lignes.append("La forme de la courbe est résolue à ce maillage.")
-        self.label_dvh.setText("\n".join(lignes))
+        self._dire("dvh", "\n".join(lignes))
 
     def on_verifier_haute_resolution(self):
         """Compare les métriques au maillage de travail et à un maillage 4x
@@ -2417,7 +2601,7 @@ class LaboSpiralApp(QMainWindow):
             return
 
         base_fine = self._base_raffinee()
-        self.label_verif_haute_res.setText(f"Calcul à {base_fine.n_elements} éléments...")
+        self._dire("haute_res", f"Calcul à {base_fine.n_elements} éléments...")
         QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
         try:
@@ -2428,61 +2612,37 @@ class LaboSpiralApp(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
 
-        # Incertitude de discrétisation : l'écart travail -> fin donne un ORDRE
-        # DE GRANDEUR de l'erreur restante. S'il est comparable à la valeur
-        # elle-même, le chiffre n'est pas résolu et ne doit pas être lu comme
-        # un résultat physique (cas constaté : une dispersion annoncée à
-        # 0.57 s/j alors que l'incertitude était de l'ordre de 1 s/j).
         reglage = self._reglage_echappement()
-        incertitude = abs(d1 - d0)
-        incertitude_iso = abs(i1 - i0)
-        incertitude_dvh = abs(v1 - v0)
         lignes = [
             f"Maillage de travail ({self.base.n_elements}) -> fin ({base_fine.n_elements}) :",
             f"Fréquence : {f0:.4f} -> {f1:.4f} Hz",
             f"Jeu minimal : {j0:.1f} -> {j1:.1f} µm",
-            # L'écart est affiché EN RELATIF à côté de chaque grandeur : les trois
-            # subissent à peu près la même erreur ABSOLUE de discrétisation,
-            # mais elles n'ont pas le même ordre de grandeur, si bien que la
-            # même erreur peut être négligeable sur l'une et dominante sur
-            # l'autre. Le DVH, au moins deux fois plus petit que la dispersion
-            # par construction, est le plus exposé -- le donner en pourcentage
-            # évite d'avoir à le déduire de deux nombres.
+            # L'écart est donné EN RELATIF : les trois grandeurs de marche
+            # subissent à peu près la même erreur absolue, mais elles n'ont pas
+            # le même ordre de grandeur. Le DVH, au moins deux fois plus petit
+            # que la dispersion, est le plus exposé.
             f"Dispersion : {d0:.2f} -> {d1:.2f} s/j ({_relatif(d1 - d0, d1)})",
             f"DVH (COSC) : {v0:+.2f} -> {v1:+.2f} s/j ({_relatif(v1 - v0, v1)})",
             f"Isochronisme propre à {reglage.amplitude_basse_deg:.0f}° : "
             f"{i0:+.2f} -> {i1:+.2f} s/j ({_relatif(i1 - i0, i1)}, "
             f"cible {reglage.retard_s_par_j:+.2f})",
         ]
-        if incertitude > 0.5 * abs(d1):
+        if abs(d1 - d0) > 0.5 * abs(d1):
             lignes.append(
-                f"ATTENTION : l'écart de maillage ({incertitude:.2f} s/j) est du même "
-                f"ordre que la dispersion elle-même -- ce chiffre n'est pas résolu. "
-                f"Raffiner le maillage de travail avant de comparer des solutions."
-            )
-        # Le DVH est contrôlé séparément de la dispersion : il vaut au mieux la
-        # moitié de celle-ci (les positions 6H et 12H sont toutes deux dans
-        # l'éventail, donc dispersion >= 2|DVH|), et un maillage qui résout
-        # correctement la dispersion peut encore laisser le DVH dans le bruit.
-        # C'est d'autant plus sensible que le DVH dépend de la PHASE du vecteur
-        # de sensibilité, pas seulement de son module.
-        if incertitude_dvh > 0.5 * abs(v1):
+                f"ATTENTION : l'écart de maillage ({abs(d1-d0):.2f} s/j) est du même "
+                f"ordre que la dispersion elle-même — ce chiffre n'est pas résolu.")
+        if abs(v1 - v0) > 0.5 * abs(v1):
             lignes.append(
-                f"ATTENTION : l'écart de maillage sur le DVH ({incertitude_dvh:.2f} s/j) "
-                f"est du même ordre que le DVH lui-même -- son signe comme sa valeur "
-                f"sont douteux à ce maillage."
-            )
-        # La compensation d'échappement se juge contre sa TOLÉRANCE, pas contre
-        # sa propre valeur : viser +/-1 s/j avec un maillage qui bouge de 2 s/j
-        # revient à contraindre du bruit de discrétisation.
-        if incertitude_iso > reglage.tolerance_s_par_j:
+                f"ATTENTION : l'écart de maillage sur le DVH ({abs(v1-v0):.2f} s/j) est "
+                f"du même ordre que le DVH lui-même — son signe comme sa valeur sont "
+                f"douteux à ce maillage.")
+        if abs(i1 - i0) > reglage.tolerance_s_par_j:
             lignes.append(
-                f"ATTENTION : l'isochronisme propre bouge de {incertitude_iso:.2f} s/j "
-                f"avec le maillage, soit plus que la tolérance de compensation demandée "
-                f"({reglage.tolerance_s_par_j:.2f} s/j) -- élargir la tolérance ou "
-                f"raffiner le maillage, sinon l'optimiseur contraint du bruit."
-            )
-        self.label_verif_haute_res.setText("\n".join(lignes))
+                f"ATTENTION : l'isochronisme propre bouge de {abs(i1-i0):.2f} s/j avec "
+                f"le maillage, soit plus que la tolérance de compensation demandée "
+                f"({reglage.tolerance_s_par_j:.2f} s/j) — l'optimiseur contraindrait "
+                f"du bruit.")
+        self._dire("haute_res", "\n".join(lignes))
 
     def on_afficher_jeu_minimal(self):
         self._synchroniser_spec()
@@ -2517,27 +2677,45 @@ class LaboSpiralApp(QMainWindow):
         self._afficher_resultats_numeriques()
 
     def on_calculer_animation(self):
-        """Calcule les images du déploiement pour le lecteur interactif. Elles
-        sont ensuite réutilisées telles quelles par l'enregistrement du projet,
-        qui n'a donc pas à refaire les résolutions elastica."""
+        self._lancer_calcul_animation(chemin_gif_a_exporter=None)
+
+    def _lancer_calcul_animation(self, chemin_gif_a_exporter):
         self._synchroniser_spec()
         if self.geom is None:
             QMessageBox.information(self, "Animation", "Générez ou chargez d'abord une géométrie.")
             return
-        self._definir_bouton_actif(self.btn_calculer_anim, True, "Calcul en cours...")
-        self.label_gif.setText(
-            f"Calcul des frames en cours (amplitude ±{self.spec.amplitude_max:.0f}°)...")
-        self._thread = AnimationThread(self.geom, float(self.geom.rayon()[0]),
-                                        self.spec.amplitude_max, n_frames=41)
+        self._chemin_gif_a_exporter = chemin_gif_a_exporter
+        self._occuper("anim", True, "Calcul en cours...")
+        self._dire("gif", f"Calcul des frames en cours (amplitude ±{self.spec.amplitude_max:.0f}°)...")
+        self._thread = AnimationThread(self.geom, float(self.geom.rayon()[0]), self.spec.amplitude_max, n_frames=41)
         self._thread.signal_termine.connect(self.on_animation_calculee)
         self._thread.start()
 
     def on_animation_calculee(self, angles_deg, frames):
-        self._definir_bouton_actif(self.btn_calculer_anim, False)
+        self._occuper("anim", False)
         self._anim_charger(angles_deg, frames)
-        self.label_gif.setText(f"Animation calculée ({len(frames)} frames) -- voir l'onglet \"Animation\".")
+        self._dire("gif", f"Animation calculée ({len(frames)} frames) -- voir l'onglet \"Animation\".")
+        # Le jeu minimal se lit sur le même déploiement : l'enchaîner évite de
+        # refaire un balayage pour une vue qui en découle.
+        self.on_afficher_jeu_minimal()
         self.tabs.setCurrentWidget(self.canvas_anim.parentWidget())
+        if getattr(self, "_chemin_gif_a_exporter", None):
+            self._exporter_gif_depuis_frames(self._chemin_gif_a_exporter)
+            self._chemin_gif_a_exporter = None
 
+    def _exporter_gif_depuis_frames(self, chemin: str):
+        self._dire("gif", "Encodage du GIF...")
+        try:
+            sauvegarder_gif_deploiement(self._anim_angles, self._anim_frames, chemin, aller_retour=True)
+        except Exception as e:
+            self._dire("gif", "(échec de l'enregistrement)")
+            QMessageBox.critical(self, "Erreur d'enregistrement du GIF", str(e))
+            return
+        self._dire_ecourte("gif", f"Enregistré : {chemin}")
+
+    # ------------------------------------------------------------------
+    # Logique -- Onglet Animation (lecteur interactif)
+    # ------------------------------------------------------------------
     def _anim_charger(self, angles_deg, frames):
         self._anim_angles = angles_deg
         self._anim_frames = frames
@@ -2635,17 +2813,6 @@ class LaboSpiralApp(QMainWindow):
         self.sb_phil_angle.setValue(base.phillips_angle_deg); self.sb_phil_n_pas.setValue(base.phillips_n_pas)
         self.sb_phil_n_points.setValue(base.phillips_n_points)
         self.sb_n_corps.setValue(base.n_elements_corps)
-        self.chk_raquette.setChecked(base.raquette_active)
-        self.sb_raq_plage.setValue(base.raquette_plage_s_par_j)
-        self.sb_raq_trans_angle.setValue(base.raquette_transition_angle_deg)
-        self.sb_raq_n_points.setValue(base.raquette_n_points)
-        self.sb_raq_trans_n_pas.setValue(base.raquette_transition_n_pas)
-        self.sb_raq_arc_avant.setValue(base.raquette_arc_avant_deg)
-        self.sb_raq_n_pas_arc.setValue(base.raquette_arc_avant_n_pas)
-        self.sb_raq_piton_angle.setValue(base.raquette_piton_angle_deg)
-        self.sb_raq_piton_n_pas.setValue(base.raquette_piton_n_pas)
-        self.sb_raq_jeu.setValue(base.raquette_jeu_um)
-        self._maj_etat_raquette()
         self.sb_n_noeuds_ep.setValue(len(base.epaisseur_noeuds)); self.sb_n_noeuds_dr.setValue(len(base.delta_r_noeuds))
 
         self.sb_pop.setValue(hyperparams.pop_size); self.sb_gen.setValue(hyperparams.n_gen)
@@ -2660,8 +2827,10 @@ class LaboSpiralApp(QMainWindow):
         if i >= 0:
             self.cb_variante.setCurrentIndex(i)
 
-        geom, diag = construire_geometrie(self.base, return_diagnostics=True,
-                                              reglage_thermique=self._reglage_thermique())
+        self._reinitialiser_analyses()
+        geom, diag = construire_geometrie(
+            self.base, return_diagnostics=True,
+            reglage_thermique=self._reglage_thermique())
         self.geom = geom
         self.label_dxf.setText("(configuration complète chargée)")
         self._afficher_diagnostics(diag)
