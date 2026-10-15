@@ -36,7 +36,7 @@ from spiral.modele import GeometrieSpiral
 from spiral.parametrage import ParametresSpiral, construire_geometrie
 from spiral.physique import (angle_point_comptage, axe_force_pivot,
                                   balayage_angulaire, frequence_propre,
-                                  marche_raquette, resoudre_elastica)
+                                  marche_raquette, raideur_lineaire, resoudre_elastica)
 from spiral.presets import (BornesOptimisation, HyperparametresGA, SpecMouvement,
                                  charger_configuration, sauvegarder_configuration)
 from spiral.raquette import (excursion_laterale_um_par_rad, facteur_zone_morte)
@@ -313,12 +313,20 @@ for _L_mm, _e_um, _h_um, _J_mg in ((100.0, 36.0, 100.0, 8.0), (50.0, 20.0, 150.0
     _g_dr = GeometrieSpiral(x=np.linspace(1.0, 1.0 + _L_mm, _n), y=np.zeros(_n),
                             epaisseur=np.full(_n, _e_um * 1e-3), hauteur=_h_um * 1e-3)
     _C = cst.E_SILICIUM * (_h_um * 1e-6) * (_e_um * 1e-6) ** 3 / (12.0 * _L_mm * 1e-3)
-    _f_th = np.sqrt(_C / (_J_mg * 1e-10)) / (2 * np.pi)
-    _f_pr = frequence_propre(_g_dr, _J_mg * 1e-10)
-    check(f"fréquence absolue exacte sur poutre droite "
+    check(f"raideur de flexion pure exacte sur poutre droite "
           f"(L={_L_mm:g} mm, e={_e_um:g} µm, h={_h_um:g} µm)",
-          abs(_f_pr - _f_th) / _f_th < 1e-12,
-          f"({_f_pr:.5f} Hz pour {_f_th:.5f} attendus)")
+          abs(1.0 / _g_dr.souplesse() - _C) / _C < 1e-12,
+          f"({1.0 / _g_dr.souplesse():.6e} N.m pour {_C:.6e} attendus)")
+    # Depuis le 2026-10-14, frequence_propre tient compte de la réaction du
+    # pivot : le collet tourne autour de l'axe sans s'en écarter. Pour une
+    # poutre droite radiale encastrée au bout, de x = a à a + L, la solution
+    # fermée est C.(1 + 12.xm²/L²), xm étant le milieu de la poutre -- bien
+    # plus raide que la flexion pure, la poutre étant tenue aux deux bouts.
+    _xm = 1.0 + _L_mm / 2.0
+    _C_pivot = _C * (1.0 + 12.0 * _xm ** 2 / _L_mm ** 2)
+    check(f"raideur avec réaction du pivot exacte sur poutre droite (L={_L_mm:g} mm)",
+          abs(raideur_lineaire(_g_dr) - _C_pivot) / _C_pivot < 1e-6,
+          f"({raideur_lineaire(_g_dr):.6e} N.m pour {_C_pivot:.6e} attendus)")
 
 check("énergie strictement croissante depuis l'équilibre",
       bool(np.all(np.diff(U_[len(U_) // 2:]) > 0)))

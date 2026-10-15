@@ -494,11 +494,20 @@ def _construire(p: ParametresSpiral, return_diagnostics: bool, reglage_thermique
     # La fréquence de départ est MESURÉE sur la géométrie, pas recalculée par
     # une formule à module constant : sur un wafer anisotrope, E varie le long
     # de la lame et aucune expression fermée ne donne la souplesse intégrée.
-    # La loi d'échelle beta^(3/2), elle, reste exacte — E ne dépend pas de
-    # l'épaisseur.
+    # La raideur reste exactement proportionnelle au cube de l'épaisseur (E ne
+    # dépend pas de l'épaisseur), mais l'inertie propre du spiral, comptée par
+    # frequence_propre, lui est proportionnelle : la loi beta^(3/2) n'est plus
+    # exacte, quelques tours de point fixe rattrapent l'écart (de l'ordre de
+    # l'inertie du spiral rapportée à celle du balancier, 1e-4).
     freq_actuelle = frequence_propre(_geom(epaisseur, 0.0), p.inertie_balancier)
     beta = (p.freq_cible / freq_actuelle) ** (2.0 / 3.0)
     t_oxyde_mm = 0.0
+    if not p.oxydation_active:
+        for _ in range(5):
+            f = frequence_propre(_geom(epaisseur * beta, 0.0), p.inertie_balancier)
+            if abs(f / p.freq_cible - 1.0) < 1e-13:
+                break
+            beta *= (p.freq_cible / f) ** (2.0 / 3.0)
 
     if p.oxydation_active:
         # Épaisseur d'oxyde et mise à l'échelle sont COUPLÉES : l'oxyde change

@@ -22,6 +22,7 @@ Les tracés (géométrie / marche diurne / front de Pareto) sont dans des
 onglets À DROITE -- ce sont des VUES, pas des réglages, donc les onglets n'y
 posent pas le problème que la note de spiropt_v1/gui.py visait à éviter.
 """
+import json
 import os
 from dataclasses import asdict, replace
 
@@ -56,7 +57,7 @@ from .isochronisme import (analyser_marches, POSITIONS_HORIZONTALES,
                             positions_verticales)
 from .echappement import ReglageEchappement
 from .thermique import ReglageThermique, analyser_thermique, etude_sensibilite
-from . import dxf_io, rapport, sauvegarde
+from . import ancien_format, dxf_io, rapport, sauvegarde
 from .optimisation import vecteur_depuis_params, params_depuis_vecteur, PAS_DISPERSION_DEG_DEFAUT
 from .threads import SondageThread, OptimisationThread, AnimationThread
 from .rendu import (sauvegarder_gif_deploiement, indices_aller_retour,
@@ -177,6 +178,10 @@ class LaboSpiralApp(QMainWindow):
         self.hyperparams = HyperparametresGA()
         self.base: ParametresSpiral | None = None
         self.geom = None
+        # Ancienne expérience (format v4-v7) reprise : son fichier et la
+        # géométrie qui en est issue, pour la reposer si l'orientation change.
+        self._ancienne = None
+        self._a_valider = {}        # widget -> libellé, champs encore à valider
         self.sondage_resultats = None
         self.solutions_pareto = []  # liste de dicts {x, dispersion, jeu}
         self._thread = None
@@ -634,6 +639,10 @@ class LaboSpiralApp(QMainWindow):
             "graphes et ne se voit qu'à la comparaison avec un relevé réel."
         )
         self.chk_collet_cote_ancre.stateChanged.connect(self._tracer_geometrie)
+        for signal in (self.sb_angle_echappement.valueChanged, self.chk_sens_trigo.stateChanged,
+                       self.chk_collet_cote_ancre.stateChanged, self.cb_plan.currentIndexChanged,
+                       self.sb_orientation_cristal.valueChanged):
+            signal.connect(self._reposer_ancienne_experience)
 
         layout.addLayout(form_repere)
         layout.addWidget(self.chk_sens_trigo)
@@ -2786,10 +2795,153 @@ class LaboSpiralApp(QMainWindow):
     def _anim_mettre_a_jour_intervalle(self):
         self._anim_timer.setInterval(int(1000 / self.sb_anim_fps.value()))
 
+    # --- Anciennes expériences (format v4-v7) ---------------------------
+    def _champ_widget(self, cle):
+        """Widget de l'interface qui porte un champ de la spec, s'il y en a un."""
+        return {"angle_echappement_deg": self.sb_angle_echappement,
+                "collet_cote_ancre": self.chk_collet_cote_ancre,
+                "sens_trigonometrique": self.chk_sens_trigo,
+                "vue_cote_rouage": self.chk_cote_rouage,
+                "plan_cristallin": self.cb_plan,
+                "orientation_cristal_deg": self.sb_orientation_cristal}.get(cle)
+
+    def _marquer_a_valider(self, widget, libelle):
+        """Encadre un champ tant que l'utilisateur ne l'a pas confirmé.
+
+        Le confirmer, c'est y toucher : changer la valeur, valider la saisie
+        (Entrée ou sortie du champ), cliquer la case, choisir dans la liste --
+        même pour garder la valeur proposée."""
+        self._a_valider[widget] = libelle
+        widget.setStyleSheet(f"border: 2px solid {theme.ACC2.name()};")
+        widget.setToolTip(f"À valider : {libelle} — absent de l'ancien fichier, "
+                          "valeur proposée par défaut.")
+        confirmer = lambda *_a, w=widget: self._confirmer_champ(w)
+        if isinstance(widget, QCheckBox):
+            widget.clicked.connect(confirmer)
+        elif isinstance(widget, QComboBox):
+            widget.activated.connect(confirmer)
+        else:
+            widget.valueChanged.connect(confirmer)
+            widget.editingFinished.connect(confirmer)
+
+    def _confirmer_champ(self, widget):
+        if self._a_valider.pop(widget, None) is None:
+            return
+        widget.setStyleSheet("")
+        widget.setToolTip("")
+        if self._a_valider:
+            self.statusBar().showMessage(
+                "Encore à valider : " + ", ".join(self._a_valider.values()))
+        else:
+            self.statusBar().showMessage("Tous les champs repris de l'ancien fichier sont validés.")
+
+    def _effacer_marques(self):
+        for w in list(self._a_valider):
+            w.setStyleSheet("")
+            w.setToolTip("")
+        self._a_valider.clear()
+
+    def _charger_ancienne_experience(self, chemin):
+        """Reprend une expérience des anciens programmes (v4-v7) : le spiral
+        est reconstruit par l'ancien générateur et repris comme une géométrie
+        importée ; les champs que l'ancien format ignorait sont mis en
+        évidence jusqu'à ce que l'utilisateur les ait validés."""
+        try:
+            spec, geom, champs, diag = ancien_format.reprendre_experience(
+                chemin, self._lire_spec_depuis_formulaire())
+        except Exception as e:
+            QMessageBox.critical(self, "Ancien fichier illisible", str(e))
+            return
+        self._effacer_marques()
+        self._reinitialiser_analyses()
+        self.spec = spec
+        for sb, v in ((self.sb_r_min, spec.r_min), (self.sb_r_max, spec.r_max),
+                      (self.sb_n_tours, spec.n_tours_reels),
+                      (self.sb_n_tours_fictifs, spec.n_tours_fictifs),
+                      (self.sb_hauteur, spec.hauteur_h), (self.sb_freq, spec.freq_cible),
+                      (self.sb_inertie, _inertie_affichee(spec.inertie_balancier)),
+                      (self.sb_jeu_min, spec.jeu_min_spires),
+                      (self.sb_amplitude_max, spec.amplitude_max),
+                      (self.sb_amp_max, spec.amplitude_max)):
+            sb.setValue(v)
+        self.geom = geom
+        self._ancienne = (chemin, geom)
+        _texte_ecourte(self.label_dxf, "ancien format : " + chemin.split("/")[-1])
+        self._tracer_geometrie()
+        a_valider = [c for c in champs if c.statut == ancien_format.A_VALIDER]
+        for c in a_valider:
+            w = self._champ_widget(c.cle)
+            # un champ grisé (orientation sur un wafer isotrope) est sans effet :
+            # il n'y a rien à y valider
+            if w is not None and w.isEnabled():
+                self._marquer_a_valider(w, c.libelle)
+        f = frequence_propre(geom, spec.inertie_balancier)
+        QMessageBox.information(self, "Ancien fichier repris",
+                                self._texte_reprise(chemin, champs, diag, f, spec))
+        self.statusBar().showMessage("Encore à valider : " + ", ".join(self._a_valider.values()))
+
+    @staticmethod
+    def _texte_reprise(chemin, champs, diag, freq, spec):
+        def ligne(c):
+            v = c.valeur
+            if isinstance(v, float):
+                v = f"{v:g}"
+            elif isinstance(v, bool):
+                v = "oui" if v else "non"
+            elif isinstance(v, dict):
+                v = "…"
+            note = f" <i>— {c.note}</i>" if c.note else ""
+            return f"<li><b>{c.libelle}</b> : {v}{note}</li>"
+        orange = theme.ACC2.name()
+        blocs = []
+        for statut, titre in ((ancien_format.A_VALIDER,
+                               f"<span style='color:{orange}'>À valider</span> "
+                               "(absents de l'ancien format, encadrés dans le panneau)"),
+                              (ancien_format.CONVERTI, "Convertis"),
+                              (ancien_format.REPRIS, "Repris tels quels"),
+                              (ancien_format.IGNORE, "Non repris")):
+            lignes = [ligne(c) for c in champs if c.statut == statut]
+            if lignes:
+                blocs.append(f"<p><b>{titre}</b></p><ul>{''.join(lignes)}</ul>")
+        controle = (f"<p>Contrôle : fréquence recalculée par le modèle actuel "
+                    f"{freq:.4f} Hz pour une cible de {spec.freq_cible:g} Hz ; "
+                    f"épaisseurs mises à l'échelle par l'ancien programme "
+                    f"(facteur {diag['facteur_epaisseur']:.4f}).</p>")
+        fin = ("<p>Changer l'angle d'échappement, le côté du collet, le sens ou le wafer "
+               "repose aussitôt le spiral. Le spiral repris s'analyse au panneau Résultats ; "
+               "il ne se ré-optimise pas avec les panneaux de forme.</p>")
+        return (f"<p><b>{chemin.split('/')[-1]}</b> est un fichier des anciens programmes "
+                f"(v4 à v7) : le spiral a été reconstruit exactement comme ils le dessinaient.</p>"
+                + "".join(blocs) + controle + fin)
+
+    def _reposer_ancienne_experience(self, *_a):
+        """Repose le spiral repris quand son orientation ou le wafer change :
+        l'ancien fichier ne les fixait pas, ils viennent de l'interface."""
+        if self._ancienne is None or self.geom is not self._ancienne[1]:
+            return
+        try:
+            _spec, geom, _c, _d = ancien_format.reprendre_experience(
+                self._ancienne[0], self._lire_spec_depuis_formulaire())
+        except Exception:
+            return
+        self._reinitialiser_analyses()
+        self.geom = geom
+        self._ancienne = (self._ancienne[0], geom)
+        self._tracer_geometrie()
+
     def on_charger_configuration(self):
         chemin, _ = QFileDialog.getOpenFileName(self, "Charger une configuration complète", "", "JSON (*.json)")
         if not chemin:
             return
+        try:
+            with open(chemin, encoding="utf-8") as f:
+                ancien = ancien_format.est_experience(json.load(f))
+        except Exception:
+            ancien = False
+        if ancien:
+            self._charger_ancienne_experience(chemin)
+            return
+        self._effacer_marques()
         try:
             spec, base, bornes, hyperparams, echappement = charger_configuration(chemin)
         except Exception as e:

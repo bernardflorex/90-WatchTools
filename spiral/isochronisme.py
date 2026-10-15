@@ -40,7 +40,7 @@ from scipy.optimize import brentq
 from .constantes import G_TERRE, RHO_SILICIUM
 from .echappement import ReglageEchappement, marche_echappement
 from .modele import GeometrieSpiral
-from .physique import balayage_angulaire
+from .physique import balayage_angulaire, inertie_equivalente_spiral
 from .raquette import analyser_jeu_goupilles
 
 # Direction du vecteur gravité, dans le repère du tracé, pour chacune des
@@ -449,8 +449,12 @@ def analyser_marches(geom: GeometrieSpiral, r_min: float, freq_cible: float,
     # choisit librement [amp_min, amp_max]), et une extrapolation silencieuse
     # par bord de np.interp donnerait une compensation fausse sans le dire.
     amp_iso = np.append(amplitudes_deg, float(reglage.amplitude_basse_deg))
+    # Inertie du balancier ET part du spiral : sans effet sur la marche, qui
+    # est relative à l'amplitude de référence, mais la fréquence des petites
+    # oscillations affichée reste ainsi comparable à frequence_propre.
     iso_tout, diag_iso = marche_isochronisme_intrinseque(
-        diag_orbite["angles_deg"], diag_orbite["energie_J"], inertie_balancier,
+        diag_orbite["angles_deg"], diag_orbite["energie_J"],
+        inertie_balancier + inertie_equivalente_spiral(geom),
         amp_iso, reglage.amplitude_reference_deg,
     )
     marche_iso, iso_basse = iso_tout[:-1], float(iso_tout[-1])

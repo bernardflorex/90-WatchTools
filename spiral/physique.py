@@ -307,20 +307,100 @@ def souplesse_integree(s_m: np.ndarray, e_m: np.ndarray) -> float:
     return float(trapezoid(1.0 / np.asarray(e_m) ** 3, x=np.asarray(s_m)))
 
 
+def _reponse_lineaire(geom: GeometrieSpiral):
+    """Réponse du spiral à une petite rotation du balancier, l'axe étant tenu.
+
+    Le spiral est une poutre encastrée au piton (ou au point de comptage) et
+    tenue au collet par l'axe du balancier, qui la fait tourner sans la laisser
+    se déplacer : c'est le même problème que résout l'élastica, linéarisé. La
+    flexion pure (couple = 1/souplesse) suppose au contraire que l'axe
+    n'exerce AUCUNE force ; ce n'est vrai que d'un développement parfaitement
+    concentrique, et la réaction du pivot raidit le spiral d'autant plus que
+    celui-ci s'en écarte (mesuré : +0.18 à +0.29% de raideur, soit +80 à
+    +125 s/j, sur les spirals de référence).
+
+    Sous un effort (Fx, Fy) et un couple M_O appliqués au collet et ramenés à
+    l'axe, le moment de flexion vaut m(s) = M_O + x(s).Fy - y(s).Fx ; les
+    déplacements conjugués (translation de l'axe, rotation) sont C.Q avec
+    C = integrale(w.wT ds/EI), w = (-y, x, 1). L'axe ne se déplace pas, d'où
+    la raideur  k = 1 / (C_MM - cT.C_FF^-1.c).
+
+    Retourne (k en N.m/rad, Q pour une rotation d'un radian, géométrie active,
+    flexibilité locale 1/EI), coordonnées en m.
+    """
+    a = geom.partie_active()
+    s, x, y = a.s * 1e-3, a.x * 1e-3, a.y * 1e-3
+    flex = 1.0 / a.rigidite_flexion()
+    w = np.vstack([-y, x, np.ones_like(x)])
+    C = np.array([[trapezoid(w[i] * w[j] * flex, x=s) for j in range(3)]
+                  for i in range(3)])
+    # Moindres carrés et non résolution directe : C est singulière quand la
+    # lame ne peut pas fléchir dans une direction (poutre droite radiale,
+    # infiniment raide en traction). L'effort correspondant est alors
+    # indéterminé et sans effet ; la solution de norme minimale le prend nul.
+    Q = np.linalg.lstsq(C, np.array([0.0, 0.0, 1.0]), rcond=None)[0]
+    return float(Q[2]), Q, a, flex
+
+
+def raideur_lineaire(geom: GeometrieSpiral) -> float:
+    """Couple de rappel par radian (N.m/rad) en petite oscillation, réaction
+    du pivot comprise. Toujours supérieur ou égal à 1/souplesse, égal pour un
+    développement concentrique."""
+    return _reponse_lineaire(geom)[0]
+
+
+def inertie_equivalente_spiral(geom: GeometrieSpiral) -> float:
+    """Inertie (kg.m²) que la masse du spiral ajoute à celle du balancier.
+
+    Méthode de Rayleigh : la lame se déforme, en petite oscillation, selon sa
+    forme statique sous une rotation du collet ; son énergie cinétique vaut
+    alors 1/2.J_eq.(dalpha/dt)², avec J_eq = somme(m_i.|u_i|²) pour une
+    rotation d'un radian. Le collet tourne avec le balancier, le piton ne
+    bouge pas : la règle classique du tiers de l'inertie du spiral en est
+    l'ordre de grandeur, ce calcul en donne la valeur pour la forme réelle.
+    Seule la partie active compte : au-delà du point de comptage la lame est
+    immobile.
+
+    Le déplacement u(s) s'obtient en intégrant la courbure m/EI depuis le
+    piton, encastré : rotation theta(s) = integrale de s à L, et
+    u(s) = integrale de s à L de (m/EI)(t) . z x (r(s) - r(t)) dt.
+    """
+    _k, Q, a, flex = _reponse_lineaire(geom)
+    s, x, y = a.s * 1e-3, a.x * 1e-3, a.y * 1e-3
+    kappa = (Q[2] + x * Q[1] - y * Q[0]) * flex
+    def depuis_piton(f):
+        """integrale de s à L de f, par trapèzes"""
+        cumul = np.concatenate([[0.0], cumulative_trapezoid(f, x=s)])
+        return cumul[-1] - cumul
+    A = depuis_piton(kappa)
+    Bx, By = depuis_piton(kappa * x), depuis_piton(kappa * y)
+    ux, uy = -(y * A - By), (x * A - Bx)        # z x (r.A - B)
+    masse = a.masse_elementaire(RHO_SILICIUM)
+    return float(np.sum(masse * (ux ** 2 + uy ** 2)))
+
+
 def frequence_propre(geom: GeometrieSpiral, inertie_balancier: float) -> float:
     """Fréquence propre (Hz) de l'oscillateur balancier-spiral pour CETTE
     géométrie, quelle que soit son origine (DXF importé, génération
-    paramétrique, solution optimisée) -- même formule (poutre linéaire,
-    couple = E.h / (12.souplesse_int)) que la mise à l'échelle automatique de
-    parametrage.construire_geometrie, mais réutilisable après coup sur une
-    géométrie déjà figée, pour afficher où l'oscillateur atterrit réellement
-    par rapport à la fréquence cible visée.
+    paramétrique, solution optimisée). C'est elle que vise la mise à l'échelle
+    automatique de parametrage.construire_geometrie, et elle qui dit où
+    l'oscillateur atterrit réellement par rapport à la fréquence cible.
+
+    Deux corrections par rapport à la formule de flexion pure
+    (couple = 1/souplesse, inertie du seul balancier), qui biaisait la
+    fréquence de +80 à +125 s/j par la raideur et de -40 à -80 s/j par
+    l'inertie sur les spirals de référence (mesures du 2026-10-14) :
+      - la raideur tient compte de la réaction du pivot (raideur_lineaire),
+        comme l'élastica, avec laquelle elle concorde ;
+      - l'inertie du spiral s'ajoute à celle du balancier
+        (inertie_equivalente_spiral).
 
     Sur un spiral à raquette, seule la partie active compte : la portion
-    au-delà du point de comptage n'apporte aucune raideur. La rigidité est
-    celle du composite silicium/oxyde quand la lame est oxydée."""
-    couple = 1.0 / geom.souplesse()
-    return (1.0 / (2.0 * np.pi)) * np.sqrt(couple / inertie_balancier)
+    au-delà du point de comptage n'apporte ni raideur ni inertie. La rigidité
+    est celle du composite silicium/oxyde quand la lame est oxydée."""
+    couple = raideur_lineaire(geom)
+    inertie = inertie_balancier + inertie_equivalente_spiral(geom)
+    return (1.0 / (2.0 * np.pi)) * np.sqrt(couple / inertie)
 
 
 def marche_raquette(geom: GeometrieSpiral, inertie_balancier: float):
