@@ -5,7 +5,9 @@ Onglet « Simulation » : simulation d'un engrènement défini par des arcs de c
 (issus de l'onglet Création ou d'un fichier .json / .Eng / .Eno) ou par des suites de
 points (roues taillées par l'onglet Fraise).
 
-Usage : python main.py [fichier]   (nécessite PySide6, matplotlib, numpy)
+Usage : python main.py [fichier]            depuis ce dossier (ou bouton « Run » de VSCode)
+        python -m engrenage.main [fichier]  depuis la racine WatchTools
+(nécessite PySide6, matplotlib, numpy)
 """
 
 import json
@@ -50,10 +52,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+if __package__ in (None, ""):
+    # lancé comme script (python main.py depuis ce dossier, bouton « Run » de
+    # VSCode) : le répertoire parent, racine de WatchTools, porte `commun` et
+    # ce paquet lui-même
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from commun import navigation, theme
-from . import arcs
-from . import contact
-from . import evolvente
+from engrenage import arcs
+from engrenage import contact
+from engrenage import evolvente
 
 RACINE = Path(__file__).resolve().parent
 FICHIER_DEFAUT = RACINE / "test.Cev"
@@ -221,7 +229,7 @@ def _json_est_arcs(chemin):
 
 
 def _libelle_violation(cle):
-    from . import recherche
+    from engrenage import recherche
     return recherche.LIBELLES.get(cle, "profil de départ inutilisable")
 
 
@@ -242,7 +250,7 @@ class Travail(QThread):
 
     def run(self):
         try:
-            from . import recherche
+            from engrenage import recherche
             roues, mobiles, mu, da_neg, da_pos, objectif, options, libres = self.prep
             # la résolution de "jeu_max=auto" se fait dans rechercher() : elle a besoin du profil de
             # référence, qui peut ne pas être le profil courant si celui-ci n'est pas valable (voir
@@ -890,7 +898,7 @@ class Fenetre(QMainWindow):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            from . import fraise as fraise_mod
+            from engrenage import fraise as fraise_mod
             paire = tuple(
                 fraise_mod.profil_fraise(m, n_periodes=int(v["n_periodes"]) or None,
                                          n_positions=int(v["n_positions"]), pc=v["pc"],
@@ -946,7 +954,7 @@ class Fenetre(QMainWindow):
         chemin = Path(nom)
         if chemin.suffix.lower() != ".frs":
             chemin = chemin.with_suffix(".Frs")
-        from . import fraise as fraise_mod
+        from engrenage import fraise as fraise_mod
         hertz = None
         if self.fraise_source is not None and all(m.e_mod for m in self.fraise_source):
             hertz = [(m.e_mod, m.poisson, m.epaisseur) for m in self.fraise_source]
@@ -963,7 +971,7 @@ class Fenetre(QMainWindow):
         nom, _ = QFileDialog.getOpenFileName(self, "Ouvrir une fraise", str(dossier), "Fraise (*.Frs)")
         if not nom:
             return
-        from . import fraise as fraise_mod
+        from engrenage import fraise as fraise_mod
         try:
             f_m, f_e, hertz = fraise_mod.lire_frs(nom)
         except (OSError, ValueError, IndexError) as e:
@@ -983,7 +991,7 @@ class Fenetre(QMainWindow):
 
     def _tailler_roue(self, w, zz, oy, n_periodes, n_positions, n_points):
         """Taille la roue `w`, remplit `self.taillage[w]` ; retourne une erreur (str) ou None."""
-        from . import fraise as fraise_mod
+        from engrenage import fraise as fraise_mod
         f = self.fraise_paire[w]
         # fraise-mère : roulement contre une droite (`tailler`) ; outil de scarving : roulement
         # contre une roue (`tailler_outil`). `oy` a le même sens dans les deux cas, un déport de
@@ -1082,7 +1090,7 @@ class Fenetre(QMainWindow):
         # chaîne peut revenir sur elle-même et être refusée par SWTE. Sans ce contrôle, l'échec
         # ne se voyait qu'en aval, par un refus de la simulation (mesuré sur une couronne taillée
         # au scarving, invalide à 5 arcs mais correcte à 4 et à 6).
-        from . import optim as optim_mod
+        from engrenage import optim as optim_mod
         mauvaises = [ROUES[w].lower() for w, (m, e) in enumerate(zip(mobiles, ecarts))
                      if e is not None and not optim_mod.profil_valide(m)]
         self._message(f"Profil courant = roues taillées en arcs ({', '.join(etats)})." +
@@ -1149,7 +1157,7 @@ class Fenetre(QMainWindow):
         base = Path(nom)
         if base.suffix.lower() == ".dxf":
             base = base.with_suffix("")
-        from . import dxf as dxf_mod
+        from engrenage import dxf as dxf_mod
         ecrits = []
         try:
             for w in (0, 1):
@@ -1213,7 +1221,7 @@ class Fenetre(QMainWindow):
                                   f"rayon primitif {f.rayon:g} mm)")
         else:
             self.ax.set_title("Aucune fraise calculée")
-        self.ax.set_aspect("equal")
+        self.ax.set_aspect("equal", adjustable="datalim")
         self.ax.grid(True, alpha=0.3)
         if self.ax.get_legend_handles_labels()[0]:
             self.ax.legend(loc="best", fontsize="small")
@@ -1234,7 +1242,7 @@ class Fenetre(QMainWindow):
         chemin = Path(nom)
         if chemin.suffix.lower() != ".dxf":
             chemin = chemin.with_suffix(".dxf")
-        from . import dxf as dxf_mod
+        from engrenage import dxf as dxf_mod
         try:
             dxf_mod.ecrire_courbe(chemin, f.echantillonner(400), n_periodes=5, pas=f.pc * math.pi * f.module)
         except OSError as e:
@@ -1254,7 +1262,7 @@ class Fenetre(QMainWindow):
         t = self.taillage[w]
         if t is None:
             return None, None
-        from . import arcs as arcs_mod
+        from engrenage import arcs as arcs_mod
         ref = self.fraise_source[w] if self.fraise_source is not None else None
         module_eff = self.fraise_paire[w].module + 2.0 * t["oy"] / t["zz"]
         reference = ref.points if ref is not None and ref.zz == t["zz"] else None
@@ -1297,8 +1305,8 @@ class Fenetre(QMainWindow):
         chemin = Path(nom)
         if not chemin.suffix:
             chemin = chemin.with_suffix(".Eno" if "Eno" in filtre_choisi else ".dxf")
-        from . import arcs as arcs_mod
-        from . import dxf as dxf_mod
+        from engrenage import arcs as arcs_mod
+        from engrenage import dxf as dxf_mod
         try:
             if chemin.suffix.lower() == ".eno":
                 if not paire_ok:
@@ -1513,7 +1521,7 @@ class Fenetre(QMainWindow):
         except ValueError as e:
             QMessageBox.warning(self, "Modifier les arcs", str(e))
             return
-        from . import optim
+        from engrenage import optim
         ecart = arcs.ecart_um(self.mobiles[w], nouveau)
         valide = optim.profil_valide(nouveau)
         reponse = QMessageBox.question(
@@ -1561,8 +1569,8 @@ class Fenetre(QMainWindow):
             return None
         try:
             v, opti = self.lire_simulation(), self.lire_optimisation()
-            from . import optim
-            from . import recherche
+            from engrenage import optim
+            from engrenage import recherche
         except Exception as e:  # noqa: BLE001 - toute erreur doit s'afficher, jamais rester muette
             self.info_opti.setText(f"<span style='color:{theme.ERREUR}'>{type(e).__name__} : {e}</span>")
             return None
@@ -1585,7 +1593,7 @@ class Fenetre(QMainWindow):
     @staticmethod
     def _jeu_max_auto(objectif, roues, mobiles, mu, da_neg, da_pos, libres):
         """Objectif dont le jeu maximal est celui du profil de départ à l'entraxe maximal, si demandé."""
-        from . import optim
+        from engrenage import optim
         if isinstance(objectif.jeu_max, str):
             ref = optim.Probleme(roues, mobiles, mu, da_neg, da_pos, libres, replace(objectif, jeu_max=None)).rapport(None)
             objectif = replace(objectif, jeu_max=ref[2]["jeu_max"] + 0.02)
@@ -1598,7 +1606,7 @@ class Fenetre(QMainWindow):
             return
         roues, mobiles, mu, da_neg, da_pos, objectif, options, libres = prep
         import numpy as np
-        from . import optim
+        from engrenage import optim
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             objectif = self._jeu_max_auto(objectif, roues, mobiles, mu, da_neg, da_pos, libres)
@@ -2230,7 +2238,7 @@ class Fenetre(QMainWindow):
         roues = [evolvente.Roue(m.mo, m.zz, None, None, 0.0, None, None) for m in self.mobiles]
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            from . import rapport
+            from engrenage import rapport
             _, resume = rapport.ecrire_rapport(
                 chemin, roues, self.mobiles, v["mu"], v["mt"], v["da_neg"], v["da_pos"],
                 optimisation=self.projet.optimisation, origine=self.origine)
@@ -2258,7 +2266,7 @@ class Fenetre(QMainWindow):
         base = Path(nom)
         if base.suffix.lower() == ".dxf":
             base = base.with_suffix("")
-        from . import dxf as dxf_mod
+        from engrenage import dxf as dxf_mod
         chemins = [base.with_name(f"{base.name}_{suffixe}.dxf") for suffixe in ("menante", "menee")]
         try:
             if self.mobiles_points is not None:

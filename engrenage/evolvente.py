@@ -478,7 +478,7 @@ def dessiner_engrenage(ax, roues, profils, n_dents=3, position=None, trajet=None
         # si c'est une couronne intérieure (son centre est alors du même côté que celui de la roue 1)
         titre = (f"{n_dents} dents par roue, roue menée décalée de "
                  f"{'180°' if roues[1].zz > 0 else '0°'} - 1/2 pas")
-    ax.set_aspect("equal")
+    ax.set_aspect("equal", adjustable="datalim")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper right", fontsize="small")
     entraxe = f", ΔA = {da * 1000:+g} µm" if da else ""

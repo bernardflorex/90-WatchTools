@@ -1,0 +1,31 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Engrenage",
+            "module": "engrenage.main",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Engrenage : module courant (python -m engrenage.<fichier>)",
+            "module": "engrenage.${fileBasenameNoExtension}",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
