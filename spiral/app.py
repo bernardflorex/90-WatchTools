@@ -326,7 +326,7 @@ class LaboSpiralApp(QMainWindow):
         # Phillips/piton), car ces deux courbes ne couvrent que quelques
         # dizaines à quelques centaines de microns sur un spiral de plusieurs
         # mm de rayon -- invisibles sur la vue d'ensemble seule.
-        self.fig_geom = Figure(figsize=(9, 6))
+        self.fig_geom = Figure(figsize=(9, 6), layout="constrained")
         gs = self.fig_geom.add_gridspec(2, 2, width_ratios=[2, 1])
         self.ax_geom = self.fig_geom.add_subplot(gs[:, 0])
         self.ax_zoom_grossmann = self.fig_geom.add_subplot(gs[0, 1])
@@ -334,7 +334,7 @@ class LaboSpiralApp(QMainWindow):
         self.canvas_geom = FigureCanvas(self.fig_geom)
         self.tabs.addTab(self._onglet_avec_barre(self.canvas_geom), "Géométrie")
 
-        self.fig_marche = Figure(figsize=(6, 5))
+        self.fig_marche = Figure(figsize=(6, 5), layout="constrained")
         self.ax_marche = self.fig_marche.add_subplot(111)
         self.canvas_marche = FigureCanvas(self.fig_marche)
         self.tabs.addTab(self._onglet_avec_barre(self.canvas_marche), "Marche diurne")
@@ -346,7 +346,7 @@ class LaboSpiralApp(QMainWindow):
         # maillage de travail et un maillage raffiné se superposent : c'est
         # l'écart entre les deux courbes qui dit si la forme du DVH est résolue,
         # pas la valeur à une seule amplitude.
-        self.fig_dvh = Figure(figsize=(6, 6))
+        self.fig_dvh = Figure(figsize=(6, 6), layout="constrained")
         gs_dvh = self.fig_dvh.add_gridspec(2, 1, height_ratios=[1.3, 1])
         self.ax_dvh_positions = self.fig_dvh.add_subplot(gs_dvh[0])
         self.ax_dvh_ecart = self.fig_dvh.add_subplot(gs_dvh[1],
@@ -354,17 +354,17 @@ class LaboSpiralApp(QMainWindow):
         self.canvas_dvh = FigureCanvas(self.fig_dvh)
         self.tabs.addTab(self._onglet_avec_barre(self.canvas_dvh), "DVH")
 
-        self.fig_pareto = Figure(figsize=(6, 5))
+        self.fig_pareto = Figure(figsize=(6, 5), layout="constrained")
         self.ax_pareto = self.fig_pareto.add_subplot(111)
         self.canvas_pareto = FigureCanvas(self.fig_pareto)
         self.tabs.addTab(self._onglet_avec_barre(self.canvas_pareto), "Front de Pareto")
 
-        self.fig_epaisseur = Figure(figsize=(6, 4))
+        self.fig_epaisseur = Figure(figsize=(6, 4), layout="constrained")
         self.ax_epaisseur = self.fig_epaisseur.add_subplot(111)
         self.canvas_epaisseur = FigureCanvas(self.fig_epaisseur)
         self.tabs.addTab(self._onglet_avec_barre(self.canvas_epaisseur), "Épaisseur")
 
-        self.fig_jeu_min = Figure(figsize=(6, 6))
+        self.fig_jeu_min = Figure(figsize=(6, 6), layout="constrained")
         self.ax_jeu_min = self.fig_jeu_min.add_subplot(111)
         self.canvas_jeu_min = FigureCanvas(self.fig_jeu_min)
         self.tabs.addTab(self._onglet_avec_barre(self.canvas_jeu_min), "Jeu minimal")
@@ -378,7 +378,7 @@ class LaboSpiralApp(QMainWindow):
         # allongée (typiquement 270 µm en x pour 60 µm en y) et doit être
         # tracée à aspect égal pour ne pas mentir sur sa forme. Côte à côte,
         # elle se réduisait à un trait écrasé.
-        self.fig_cg = Figure(figsize=(8, 7))
+        self.fig_cg = Figure(figsize=(8, 7), layout="constrained")
         gs_cg = self.fig_cg.add_gridspec(2, 2, height_ratios=[1, 1.5],
                                           width_ratios=[40, 1])
         self.ax_cg_xy = self.fig_cg.add_subplot(gs_cg[0, 0])
@@ -390,7 +390,7 @@ class LaboSpiralApp(QMainWindow):
         self.canvas_cg = FigureCanvas(self.fig_cg)
         self.tabs.addTab(self._onglet_avec_barre(self.canvas_cg), "Orbite du CG")
 
-        self.fig_thermique = Figure(figsize=(6, 5))
+        self.fig_thermique = Figure(figsize=(6, 5), layout="constrained")
         self.ax_thermique = self.fig_thermique.add_subplot(111)
         self.canvas_thermique = FigureCanvas(self.fig_thermique)
         self.tabs.addTab(self._onglet_avec_barre(self.canvas_thermique), "Thermique")
@@ -416,7 +416,7 @@ class LaboSpiralApp(QMainWindow):
         v = QVBoxLayout(conteneur)
         v.setContentsMargins(0, 0, 0, 0)
 
-        self.fig_anim = Figure(figsize=(6, 6))
+        self.fig_anim = Figure(figsize=(6, 6), layout="constrained")
         self.ax_anim = self.fig_anim.add_subplot(111)
         self.canvas_anim = FigureCanvas(self.fig_anim)
         barre_anim = NavigationToolbar(self.canvas_anim, conteneur)
@@ -1872,7 +1872,7 @@ class LaboSpiralApp(QMainWindow):
                 angle_collet_deg=self.base.angle_collet_deg if self.base else None,
                 angle_ancre_deg=self.base.angle_ancre_deg if self.base else None,
                 rayon_min=float(self.geom.rayon().min()))
-            self.ax_geom.set_aspect("equal")
+            self.ax_geom.set_aspect("equal", adjustable="datalim")
             self.ax_geom.set_xlabel("x (mm)")
             self.ax_geom.set_ylabel("y (mm)")
 
@@ -1895,14 +1895,14 @@ class LaboSpiralApp(QMainWindow):
             i_fin_g = min(n_g + marge_g, self.geom.n)
             self.ax_zoom_grossmann.plot(ext[:i_fin_g, 0], ext[:i_fin_g, 1], ".-", color=theme.encre(), ms=2, lw=0.8)
             self.ax_zoom_grossmann.plot(inte[:i_fin_g, 0], inte[:i_fin_g, 1], ".-", color=theme.encre(), ms=2, lw=0.8)
-            self.ax_zoom_grossmann.set_aspect("equal")
+            self.ax_zoom_grossmann.set_aspect("equal", adjustable="datalim")
             self.ax_zoom_grossmann.set_title("Zoom collet (Grossmann)", fontsize=9)
             self.ax_zoom_grossmann.tick_params(labelsize=7)
 
             i_debut_p = max(self.geom.n - n_p - marge_p, 0)
             self.ax_zoom_phillips.plot(ext[i_debut_p:, 0], ext[i_debut_p:, 1], ".-", color=theme.encre(), ms=2, lw=0.8)
             self.ax_zoom_phillips.plot(inte[i_debut_p:, 0], inte[i_debut_p:, 1], ".-", color=theme.encre(), ms=2, lw=0.8)
-            self.ax_zoom_phillips.set_aspect("equal")
+            self.ax_zoom_phillips.set_aspect("equal", adjustable="datalim")
             self.ax_zoom_phillips.tick_params(labelsize=7)
 
             if self.geom.a_partie_morte:
@@ -1922,7 +1922,7 @@ class LaboSpiralApp(QMainWindow):
             else:
                 self.ax_zoom_phillips.set_title("Zoom piton (Phillips)", fontsize=9)
 
-        self.fig_geom.tight_layout()
+        # mise en page : moteur « constrained » de la figure, refait à chaque tracé
         self.canvas_geom.draw_idle()
         self._tracer_epaisseur()
         self._afficher_resultats_numeriques()
@@ -2261,7 +2261,7 @@ class LaboSpiralApp(QMainWindow):
         self.ax_marche.axhline(0, color=theme.encre(), lw=0.8)
         self.ax_marche.grid(True, linestyle=":", alpha=0.5)
         self.ax_marche.legend(fontsize=8, ncol=2)
-        self.fig_marche.tight_layout()
+        # mise en page : moteur « constrained » de la figure, refait à chaque tracé
         self.canvas_marche.draw_idle()
         self.tabs.setCurrentWidget(self.canvas_marche.parentWidget())
 
@@ -2332,7 +2332,7 @@ class LaboSpiralApp(QMainWindow):
         self.ax_thermique.grid(True, linestyle=":", alpha=0.5)
         self.ax_thermique.legend(fontsize=8)
         self.ax_thermique.set_title("Marche en fonction de la température", fontsize=9)
-        self.fig_thermique.tight_layout()
+        # mise en page : moteur « constrained » de la figure, refait à chaque tracé
         self.canvas_thermique.draw_idle()
         self.tabs.setCurrentWidget(self.canvas_thermique.parentWidget())
 
@@ -2418,7 +2418,7 @@ class LaboSpiralApp(QMainWindow):
         self.ax_cg_angle.set_ylabel("position du CG (µm)")
         self.ax_cg_angle.grid(True, linestyle=":", alpha=0.5)
         self.ax_cg_angle.legend(fontsize=8)
-        self.fig_cg.tight_layout()
+        # mise en page : moteur « constrained » de la figure, refait à chaque tracé
         self.canvas_cg.draw_idle()
 
     def _metriques_geometrie(self, geom, r_min: float = None):
@@ -2571,7 +2571,7 @@ class LaboSpiralApp(QMainWindow):
         ax2.set_title("DVH = 6H − à plat", fontsize=10)
         ax2.grid(True, linestyle=":", alpha=0.5)
         ax2.legend(fontsize=8)
-        self.fig_dvh.tight_layout()
+        # mise en page : moteur « constrained » de la figure, refait à chaque tracé
         self.canvas_dvh.draw_idle()
         self.tabs.setCurrentWidget(self.canvas_dvh.parentWidget())
 
@@ -2673,7 +2673,7 @@ class LaboSpiralApp(QMainWindow):
         self.ax_jeu_min.plot(Xe, Ye, "-", color="tab:red", lw=0.9, label=f"déformé à {angle_pire:+.0f}°")
         self.ax_jeu_min.plot(Xi, Yi, "-", color="tab:red", lw=0.9)
         self.ax_jeu_min.plot(0, 0, "+", color=theme.encre(), ms=10)
-        self.ax_jeu_min.set_aspect("equal")
+        self.ax_jeu_min.set_aspect("equal", adjustable="datalim")
         self.ax_jeu_min.set_xlabel("x (mm)")
         self.ax_jeu_min.set_ylabel("y (mm)")
         self.ax_jeu_min.set_title(f"Jeu minimal = {jeu_mm[idx]*1000:.1f} µm à l'angle {angle_pire:+.0f}°")
@@ -2767,7 +2767,7 @@ class LaboSpiralApp(QMainWindow):
         self.ax_anim.plot(0, 0, "+", color=theme.encre(), ms=10)
         self.ax_anim.set_xlim(*xlim)
         self.ax_anim.set_ylim(*ylim)
-        self.ax_anim.set_aspect("equal")
+        self.ax_anim.set_aspect("equal", adjustable="datalim")
         self.ax_anim.set_xlabel("x (mm)")
         self.ax_anim.set_ylabel("y (mm)")
         self.canvas_anim.draw_idle()

@@ -1,0 +1,44 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Spiral",
+            "module": "spiral.main",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Spiral : module courant (python -m spiral.<fichier>)",
+            "module": "spiral.${fileBasenameNoExtension}",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Spiral : tests",
+            "program": "${workspaceFolder}/tests/test_spiral_lab.py",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
