@@ -24,6 +24,9 @@ OUTILS = (
           "optimisation, fraise", "engrenage.main", icones.engrenage, theme.ACC2),
     Outil("spiral", "Spiral", "Spiral : courbes terminales, isochronisme, optimisation",
           "spiral.main", icones.spiral, theme.ACC3),
+    Outil("echappement", "Échappement", "Échappement à ancre suisse : tracé, rendement "
+          "statique et dynamique, retard, optimisation", "echappement.main",
+          icones.echappement, theme.ACC4),
 )
 
 

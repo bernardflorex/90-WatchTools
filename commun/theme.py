@@ -111,6 +111,12 @@ def appliquer_matplotlib():
     except ImportError:
         return
     matplotlib.rcParams.update(_rc_sombre())
+    # Les dessins à échelle égale étendent leurs données pour remplir la vue
+    # (adjustable="datalim") : matplotlib le signale à chaque tracé, alors
+    # que c'est voulu. Ce message seul est filtré.
+    import logging
+    logging.getLogger("matplotlib.axes._base").addFilter(
+        lambda enregistrement: not enregistrement.getMessage().startswith("Ignoring fixed"))
 
 
 def appliquer(app):

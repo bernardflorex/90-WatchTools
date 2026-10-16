@@ -68,6 +68,22 @@ def spiral(q, c):
     q.drawEllipse(QPointF(*pts[-1]), 0.03, 0.03)
 
 
+def echappement(q, c):
+    """Ancre suisse : axe, deux bras à palettes et la baguette vers la
+    fourchette."""
+    q.setBrush(Qt.BrushStyle.NoBrush)
+    q.drawPolyline(_polygone([(-0.38, 0.18), (0.0, 0.05), (0.38, 0.18)]))
+    q.drawPolyline(_polygone([(0.0, 0.05), (0.0, -0.36)]))
+    q.drawPolyline(_polygone([(-0.12, -0.36), (0.12, -0.36)]))
+    q.drawPolyline(_polygone([(-0.12, -0.36), (-0.12, -0.44)]))
+    q.drawPolyline(_polygone([(0.12, -0.36), (0.12, -0.44)]))
+    q.setBrush(_aplat(c))
+    for s in (-1, 1):
+        q.drawPolygon(_polygone([(s * 0.30, 0.15), (s * 0.40, 0.19), (s * 0.34, 0.40), (s * 0.25, 0.36)]))
+    q.setBrush(QBrush(c))
+    q.drawEllipse(QPointF(0.0, 0.05), 0.045, 0.045)
+
+
 def icone(dessin, couleur, cote=128):
     """QIcon de `cote` pixels a partir d'une fonction de dessin."""
     pm = QPixmap(cote, cote)
