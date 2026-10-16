@@ -1,0 +1,44 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Échappement",
+            "module": "echappement.main",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Échappement : module courant (python -m echappement.<fichier>)",
+            "module": "echappement.${fileBasenameNoExtension}",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Échappement : simulation dynamique (console)",
+            "module": "echappement.dynamique",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}

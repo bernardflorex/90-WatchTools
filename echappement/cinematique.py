@@ -1,271 +1,265 @@
 """Relevé cinématique du tracé : ce que fait l'échappement, sans les efforts.
 
-L'ancre est menée pas à pas d'une butée à l'autre. À chaque position, la roue
-est poussée dans son sens de rotation jusqu'au contact (position d'appui) et
-le balancier est placé contre l'un ou l'autre flanc d'entrée de la fourchette.
-On en déduit, pour chaque palette :
+L'ancre est menée d'une butée à l'autre ; à chaque position la roue est
+poussée dans son sens jusqu'au contact (position d'appui), et le balancier est
+placé contre l'un ou l'autre flanc de la fourchette. Tout est lu dans les
+tables de contact (tables.py). On en déduit, pour chaque alternance :
 
-  - la chute : rotation libre de la roue entre la fin de l'impulsion et le
-    premier contact sur la face de repos de l'autre palette ;
-  - le chemin perdu : course de la dent sur la face de repos entre ce premier
-    contact et la position de repos, ancre sur la butée (en µm) ;
-  - le repos : distance, sur la face de repos, de la dent à l'arête de repos,
-    ancre sur la butée ;
   - le dégagement, l'impulsion sur le plan de la palette puis sur le plan de
-    la dent, en angle d'ancre ;
-  - le recul de la roue au dégagement (effet du tirage) ;
-  - côté balancier : l'angle d'entrée de l'ellipse dans la fourchette, la fin
-    du dégagement, le début et la fin de l'impulsion, comptés depuis la LIGNE
-    DES CENTRES ancre-balancier. Leur répartition de part et d'autre de cette
-    ligne est ce qui fait l'erreur de marche de l'échappement.
+    la dent, en angle d'ancre, et le recul de la roue au dégagement ;
+  - la chute : rotation libre de la roue entre l'échappement de la dent et
+    le premier contact sur la face de repos de l'autre palette ;
+  - le chemin perdu : course de la dent sur la face de repos entre ce premier
+    contact et la position de repos, ancre sur la butée (µm) ;
+  - le repos à la chute et sur la butée (µm, depuis l'arête de repos) ;
+  - côté balancier : entrée de l'ellipse dans la fourchette, fin du
+    dégagement, fin de l'impulsion, comptés depuis la LIGNE DES CENTRES
+    ancre-balancier, positifs après elle dans le sens du mouvement.
 
-Convention : angles dans le sens trigonométrique de la vue standard ; les
-angles d'ancre sont comptés depuis la position médiane entre les butées.
+Les angles d'ancre affichés sont comptés depuis la médiane des butées.
 """
 
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from .geometrie import point_de_contact, rotation, tourner_jusquau_contact
+from .geometrie import rotation
+from .tables import DEG, RECUL, Tables
 
-DEG = np.pi / 180.0
-
-
-def appui_roue(trace, alpha, phi_depart):
-    """Position de la roue poussée contre l'ancre posée à `alpha`."""
-    return tourner_jusquau_contact(trace.roue, phi_depart, trace.sens_roue,
-                                   [(trace.ancre, alpha)], pas=0.02 * DEG,
-                                   course=30 * DEG)
+#: au-delà de ce saut de la roue entre deux pas, il y a eu chute
+SAUT_CHUTE = 0.2 * DEG
 
 
-def contact_roue(trace, alpha, phi):
-    """(point, étiquette sur l'ancre, étiquette sur la roue)."""
-    P, e_roue, e_ancre = point_de_contact(trace.roue, phi, trace.ancre, alpha)
-    return P, (e_ancre.etiquette if e_ancre else ""), (e_roue.etiquette if e_roue else "")
-
-
-def course_butees(trace):
-    """Angles d'ancre (depuis la pose dessinée) des deux butées."""
-    a = [tourner_jusquau_contact(trace.ancre, 0.0, s, [(b, 0.0) for b in trace.butees],
-                                 pas=0.05 * DEG, course=30 * DEG) for s in (-1, 1)]
-    return min(a), max(a)
-
-
-def angle_ligne_des_centres(trace):
-    """Angle du balancier (depuis la pose dessinée) qui met le centre de
-    l'ellipse sur la ligne balancier -> ancre."""
-    c = next(e.centre for e in trace.balancier.elements if e.est_arc and e.rayon > 0.1)
-    v = c - trace.balancier.axe
-    w = trace.ancre.axe - trace.balancier.axe
-    return float(np.arctan2(v[0] * w[1] - v[1] * w[0], v @ w))
-
-
-def bornes_balancier(trace, alpha, beta_depart):
-    """Les deux positions du balancier où l'ellipse touche la fourchette
-    posée à `alpha` : (beta_bas, beta_haut). L'ellipse y est libre entre les
-    deux (ébat)."""
-    bas = tourner_jusquau_contact(trace.balancier, beta_depart, -1, [(trace.ancre, alpha)],
-                                  pas=0.05 * DEG, course=40 * DEG)
-    haut = tourner_jusquau_contact(trace.balancier, beta_depart, +1, [(trace.ancre, alpha)],
-                                   pas=0.05 * DEG, course=40 * DEG)
-    return bas, haut
-
-
-def centre_fourchette(trace, alpha):
-    """Angle du balancier qui place le centre de l'ellipse sur l'axe de la
-    fourchette posée à `alpha` (milieu de l'entrée de fourchette)."""
-    bag = trace.ancre.element("baguette").points
-    u = rotation(bag[-1], trace.ancre.axe, alpha) - trace.ancre.axe
-    u /= np.hypot(*u)
-    c = next(e.centre for e in trace.balancier.elements if e.est_arc and e.rayon > 0.1)
-    rho = np.hypot(*(c - trace.balancier.axe))
-    # intersection de la droite axe_ancre + t.u avec le cercle de l'ellipse
-    o = trace.ancre.axe - trace.balancier.axe
-    b, cc = o @ u, o @ o - rho ** 2
-    t = -b - np.sqrt(max(b * b - cc, 0.0))
-    p = trace.ancre.axe + t * u - trace.balancier.axe
-    v = c - trace.balancier.axe
-    return float(np.arctan2(v[0] * p[1] - v[1] * p[0], v @ p))
+def _wrap(x, p, marge):
+    """Ramène x dans [-marge, p - marge)."""
+    return np.mod(x + marge, p) - marge
 
 
 @dataclass
 class Alternance:
-    """Relevé d'une alternance : l'ancre va de `butee_depart` à `butee_arrivee`."""
-    palette: str                  # palette qui travaille (repos, dégagement, impulsion)
-    alpha: np.ndarray = None      # angles d'ancre parcourus (rad, pose dessinée)
-    phi: np.ndarray = None        # position d'appui de la roue
-    etiquettes: list = field(default_factory=list)
-    evenements: dict = field(default_factory=dict)
+    palette: str                      # palette qui travaille
+    palette_suivante: str = ""        # palette qui reçoit la dent à la chute
+    depart: float = 0.0               # angle d'ancre (rad, pose dessinée)
+    arrivee: float = 0.0
+    s_b: int = 0                      # sens de rotation du balancier
+    alpha: np.ndarray = None          # grille parcourue
+    phi: np.ndarray = None            # position d'appui de la roue
+    evenements: dict = field(default_factory=dict)   # angles d'ancre (rad, pose dessinée)
+    mesures: dict = field(default_factory=dict)
 
 
-def _classe(etiquette_ancre, etiquette_roue):
-    if etiquette_ancre.startswith("face de repos"):
-        return "repos"
-    if etiquette_ancre.startswith("arête de sortie") and etiquette_roue == "plan de la dent":
-        return "impulsion dent"
-    return "impulsion palette"
+class Releve:
+    """Relevé cinématique complet d'un tracé."""
 
+    def __init__(self, T: Tables):
+        self.T = T
+        t = T.trace
+        self.s = t.sens_roue
+        self.p = t.pas
+        self.a_mid = 0.5 * (T.a_min + T.a_max)
+        # pose dessinée : la roue finit sa chute, l'ancre gagne la butée proche
+        # pose dessinée, ramenée entre les butées si celles-ci ont été resserrées
+        i0 = int(np.clip(np.argmin(np.abs(T.alpha)), T.i_min, T.i_max))
+        phi0 = self.appui(i0, 0.0)[0]
+        self.chute_dessinee = abs(phi0)
+        proche = T.i_min if abs(T.a_min) < abs(T.a_max) else T.i_max
+        phi = phi0
+        for i in (range(i0, proche - 1, -1) if proche < i0 else range(i0, proche + 1)):
+            phi = self.appui(i, phi)[0]
+        self.alternances = []
+        for _ in range(2):
+            alt = self._alternance(proche, phi)
+            self.alternances.append(alt)
+            proche = T.i_max if proche == T.i_min else T.i_min
+            phi = alt.phi[-1]
 
-def balayer(trace, a_depart, a_arrivee, phi_depart, pas=0.05 * DEG):
-    """Mène l'ancre de a_depart à a_arrivee, la roue en appui."""
-    n = max(2, int(np.ceil(abs(a_arrivee - a_depart) / pas)) + 1)
-    A = np.linspace(a_depart, a_arrivee, n)
-    phi, P, lab = [], [], []
-    f = phi_depart
-    for a in A:
-        f = appui_roue(trace, a, f)
-        pt, ea, er = contact_roue(trace, a, f)
-        phi.append(f)
-        P.append(trace.ancre.vers_local(pt, a))
-        lab.append((ea, er))
-    return A, np.array(phi), np.array(P), lab
+    # -- roue en appui -------------------------------------------------------
+    def appui(self, i, phi):
+        """Position d'appui de la roue à l'angle d'ancre d'indice i, en partant
+        de phi : (phi, palette touchée)."""
+        best, cote = None, None
+        for c, tab in self.T.roue.items():
+            if not np.isfinite(tab.phi[i]):
+                continue
+            d = _wrap(self.s * (tab.phi[i] - phi), self.p, RECUL)
+            if best is None or d < best:
+                best, cote = d, c
+        if best is None:
+            return phi, None
+        return phi + self.s * best, cote
 
+    def _etiquette(self, cote, i):
+        tab = self.T.roue[cote]
+        return tab.sur_ancre[i], tab.sur_roue[i]
 
-def _affiner(trace, a0, a1, f0, critere, n=30):
-    """Angle d'ancre où `critere(étiquettes)` bascule, entre a0 (faux) et a1 (vrai)."""
-    for _ in range(n):
-        m = 0.5 * (a0 + a1)
-        fm = appui_roue(trace, m, f0)
-        if critere(contact_roue(trace, m, fm)):
-            a1 = m
-        else:
-            a0, f0 = m, fm
-    return a0, a1, f0
-
-
-def releve(trace, pas=0.05 * DEG):
-    """Relevé complet du tracé, à partir de la pose dessinée."""
-    r = {}
-    a_min, a_max = course_butees(trace)
-    a_mid = 0.5 * (a_min + a_max)
-    r["course_ancre_deg"] = (a_max - a_min) / DEG
-    r["ancre_dessinee_deg"] = -a_mid / DEG
-    beta_ldc = angle_ligne_des_centres(trace)
-    r["balancier_dessine_deg"] = -beta_ldc / DEG
-
-    # Pose dessinée : la roue tombe, puis l'ancre gagne la butée la plus proche.
-    phi0 = appui_roue(trace, 0.0, 0.0)
-    P0, ea, er = contact_roue(trace, 0.0, phi0)
-    r["chute_dessinee_deg"] = abs(phi0) / DEG
-    r["chute_dessinee_contact"] = ea
-    butee_proche = a_min if abs(a_min) < abs(a_max) else a_max
-    butee_loin = a_max if butee_proche == a_min else a_min
-
-    alternances = []
-    depart, arrivee, f = butee_proche, butee_loin, appui_roue(trace, butee_proche, phi0)
-    for _ in range(2):
-        A, F, P, lab = balayer(trace, depart, arrivee, f, pas)
-        cote = lab[0][0].split()[-1]                     # palette au repos au départ
-        alt = Alternance(palette=cote, alpha=A, phi=F, etiquettes=lab)
-        classes = [_classe(*l) if l[0].endswith(cote) else "chute" for l in lab]
-        ev = alt.evenements
-        # fin du dégagement : la dent quitte la face de repos
-        k = next(i for i, c in enumerate(classes) if c != "repos")
-        ev["fin_degagement"], _, _ = _affiner(
-            trace, A[k - 1], A[k], F[k - 1], lambda c: not c[1].startswith("face de repos"))
-        # passage du plan de la palette au plan de la dent
-        k2 = next((i for i, c in enumerate(classes) if c == "impulsion dent"), None)
-        if k2 is not None:
-            ev["debut_impulsion_dent"], _, _ = _affiner(
-                trace, A[k2 - 1], A[k2], F[k2 - 1],
-                lambda c: c[1].startswith("arête de sortie") and c[2] == "plan de la dent")
-        # chute : la dent quitte la palette, la suivante tombe sur l'autre
-        k3 = next(i for i, c in enumerate(classes) if c == "chute")
-        a_chute, a_apres, f_av = _affiner(
-            trace, A[k3 - 1], A[k3], F[k3 - 1], lambda c: not c[1].endswith(cote))
-        # juste après la fin de l'impulsion, la roue avance librement jusqu'à
-        # l'autre palette
-        f_ap = appui_roue(trace, a_apres, f_av)
-        ev["chute"] = a_apres
-        alt.chute_deg = abs(f_ap - f_av) / DEG
-        # chemin perdu et repos sur l'autre palette
-        autre = contact_roue(trace, a_apres, f_ap)[1].split()[-1]
-        p_chute = trace.ancre.vers_local(contact_roue(trace, a_apres, f_ap)[0], a_apres)
-        f_b = appui_roue(trace, arrivee, f_ap)
-        p_butee = trace.ancre.vers_local(contact_roue(trace, arrivee, f_b)[0], arrivee)
-        face = trace.ancre.element(f"face de repos {autre}").points
-        arete = trace.ancre.element(f"arête de repos {autre}").points.mean(0)
-        coin = face[0] if np.hypot(*(face[0] - arete)) < np.hypot(*(face[-1] - arete)) else face[-1]
-        alt.palette_suivante = autre
-        alt.chemin_perdu_um = 1000 * np.hypot(*(p_butee - p_chute))
-        alt.repos_chute_um = 1000 * np.hypot(*(p_chute - coin))
-        alt.repos_butee_um = 1000 * np.hypot(*(p_butee - coin))
-        # recul de la roue pendant le dégagement
-        i_deg = [i for i, c in enumerate(classes) if c == "repos"]
-        alt.recul_deg = max(0.0, float(np.max(-trace.sens_roue * (F[i_deg] - F[0])))) / DEG
-        alt.depart, alt.arrivee = depart, arrivee
-        alternances.append(alt)
-        depart, arrivee, f = arrivee, depart, f_b
-
-    # Balancier : bornes de l'ellipse dans la fourchette sur toute la course.
-    A = np.linspace(a_min, a_max, 145)
-    # None : aucun flanc de ce côté, l'ellipse sort librement par l'entrée de
-    # fourchette (c'est le cas aux butées, où elle entre et sort)
-    bornes = np.array([[np.nan if v is None else v
-                        for v in bornes_balancier(trace, a, centre_fourchette(trace, a))]
-                       for a in A], dtype=float)
-    for alt in alternances:
+    # -- une alternance ------------------------------------------------------
+    def _alternance(self, i_dep, phi):
+        T = self.T
+        i_arr = T.i_max if i_dep == T.i_min else T.i_min
+        pas = 1 if i_arr > i_dep else -1
+        idx = list(range(i_dep, i_arr + pas, pas))
+        Phi, cotes = [], []
+        for i in idx:
+            phi, c = self.appui(i, phi)
+            Phi.append(phi)
+            cotes.append(c)
+        Phi = np.array(Phi)
+        travail = cotes[0]
+        alt = Alternance(palette=travail, depart=T.alpha[i_dep], arrivee=T.alpha[i_arr],
+                         alpha=T.alpha[idx], phi=Phi)
         s_a = np.sign(alt.arrivee - alt.depart)
-        s_b = -s_a                                    # le balancier tourne en sens inverse
-        pousse = bornes[:, 1] if s_b > 0 else bornes[:, 0]     # l'ellipse mène
-        mene = bornes[:, 0] if s_b > 0 else bornes[:, 1]       # la fourchette mène
-        interp = lambda B, a: float(np.interp(a, A, B))
-        ev = alt.evenements
-        b_entree = interp(pousse, alt.depart)
-        b_deg = interp(pousse, ev["fin_degagement"])
-        # l'ancre rattrape l'ébat : la fourchette reprend l'ellipse en b_deg
+        alt.s_b = int(-s_a)
+        alt.idx = idx
+        ev, me = alt.evenements, alt.mesures
+
+        def premier(cond):
+            return next(k for k in range(1, len(idx)) if cond(k))
+
+        # fin du dégagement : la dent quitte la face de repos
+        k = premier(lambda k: cotes[k] == travail
+                    and not self._etiquette(travail, idx[k])[0].startswith("face de repos"))
+        ev["fin_degagement"] = self._affiner(travail, idx[k - 1], idx[k],
+                                             lambda ea, er: not ea.startswith("face de repos"))
+        # impulsion sur le plan de la dent
+        k2 = next((k for k in range(1, len(idx)) if cotes[k] == travail
+                   and self._etiquette(travail, idx[k])[1] == "plan de la dent"
+                   and self._etiquette(travail, idx[k])[0].startswith("arête de sortie")), None)
+        if k2 is not None:
+            ev["debut_impulsion_dent"] = self._affiner(
+                travail, idx[k2 - 1], idx[k2],
+                lambda ea, er: er == "plan de la dent" and ea.startswith("arête de sortie"))
+        # chute : la palette de travail lâche la dent
+        k3 = premier(lambda k: cotes[k] != travail or abs(Phi[k] - Phi[k - 1]) > SAUT_CHUTE)
+        a_e, phi_e = self._echappement(travail, idx[k3 - 1], idx[k3], Phi[k3 - 1])
+        ev["chute"] = a_e
+        autre = "sortie" if travail == "entrée" else "entrée"
+        alt.palette_suivante = autre
+        atterr = T.contact_roue(autre, a_e, phi_e)
+        me["chute_deg"] = abs(atterr[0] - phi_e) / DEG
+        alt.phi_echappement, alt.phi_atterrissage = phi_e, atterr[0]
+        p_chute = rotation(atterr[1], T.trace.ancre.axe, -a_e)
+        # repos sur butée : contact de l'autre palette à l'arrivée
+        tab = T.roue[autre]
+        p_butee = rotation(tab.P[i_arr], T.trace.ancre.axe, -T.alpha[i_arr])
+        face = T.trace.ancre.element(f"face de repos {autre}").points
+        arete = T.trace.ancre.element(f"arête de repos {autre}").points.mean(0)
+        coin = min((face[0], face[-1]), key=lambda q: np.hypot(*(q - arete)))
+        me["chemin_perdu_um"] = 1000 * np.hypot(*(p_butee - p_chute))
+        me["repos_chute_um"] = 1000 * np.hypot(*(p_chute - coin))
+        me["repos_butee_um"] = 1000 * np.hypot(*(p_butee - coin))
+        deg = [k for k in range(len(idx)) if T.alpha[idx[k]] * s_a <= ev["fin_degagement"] * s_a]
+        me["recul_deg"] = max(0.0, float(np.max(-self.s * (Phi[deg] - Phi[0])))) / DEG
+        me["avance_roue_deg"] = abs(Phi[-1] - Phi[0]) / DEG
+
+        # balancier
+        bas, haut = T.fourche_bas.beta, T.fourche_haut.beta
+        alt.pousse, alt.mene = (T.fourche_haut, T.fourche_bas) if alt.s_b > 0 \
+            else (T.fourche_bas, T.fourche_haut)
+        pousse, mene = alt.pousse.beta, alt.mene.beta
+        b_entree = T.interp(pousse, alt.depart)
+        b_deg = T.interp(pousse, ev["fin_degagement"])
         ok = np.isfinite(mene)
-        ordre = np.argsort((mene * s_b)[ok])
-        a_reprise = float(np.interp(b_deg * s_b, (mene * s_b)[ok][ordre], A[ok][ordre]))
-        b_fin = interp(mene, ev["chute"])
-        rel = lambda b: s_b * (b - beta_ldc) / DEG    # >0 : après la ligne des centres
-        alt.balancier = {
-            "entree_ellipse": rel(b_entree), "fin_degagement": rel(b_deg),
-            "reprise_impulsion": rel(b_deg), "fin_impulsion": rel(b_fin),
-            "levee_totale": abs(b_fin - b_entree) / DEG,
-        }
-        alt.a_mid = a_mid
-        alt.ancre = {
-            "depart": (alt.depart - a_mid) / DEG, "fin_degagement": (ev["fin_degagement"] - a_mid) / DEG,
-            "reprise_ellipse": (a_reprise - a_mid) / DEG,
-            "debut_impulsion_dent": ((ev["debut_impulsion_dent"] - a_mid) / DEG
-                                     if "debut_impulsion_dent" in ev else None),
-            "chute": (ev["chute"] - a_mid) / DEG, "arrivee": (alt.arrivee - a_mid) / DEG,
-        }
-    r["alternances"] = alternances
-    return r
+        o = np.argsort((mene * alt.s_b)[ok])
+        ev["reprise_ellipse"] = float(np.interp(b_deg * alt.s_b, (mene * alt.s_b)[ok][o],
+                                                T.alpha[ok][o]))
+        b_fin = T.interp(mene, a_e)
+        rel = lambda b: alt.s_b * (b - T.beta_ldc) / DEG
+        me["entree_ellipse_deg"] = rel(b_entree)
+        me["fin_degagement_balancier_deg"] = rel(b_deg)
+        me["fin_impulsion_balancier_deg"] = rel(b_fin)
+        me["levee_deg"] = abs(b_fin - b_entree) / DEG
+        return alt
+
+    def _affiner(self, cote, i0, i1, critere, n=30):
+        """Angle d'ancre où le contact sur `cote` bascule (critere sur les
+        étiquettes devient vrai), entre les indices i0 et i1."""
+        T = self.T
+        a0, a1 = T.alpha[i0], T.alpha[i1]
+        phi0 = T.roue[cote].phi[i0]
+        for _ in range(n):
+            m = 0.5 * (a0 + a1)
+            r = T.contact_roue(cote, m, phi0 - self.s * RECUL)
+            if r is not None and critere(r[3], r[4]):
+                a1 = m
+            else:
+                a0 = m
+                if r is not None:
+                    phi0 = r[0]
+        return 0.5 * (a0 + a1)
+
+    def _echappement(self, cote, i0, i1, phi0, n=30):
+        """Dernier angle d'ancre où la palette `cote` retient la dent, et la
+        position de la roue à cet instant."""
+        T = self.T
+        a0, a1 = T.alpha[i0], T.alpha[i1]
+        for _ in range(n):
+            m = 0.5 * (a0 + a1)
+            r = T.contact_roue(cote, m, phi0 - self.s * RECUL)
+            if r is not None and abs(r[0] - phi0) < SAUT_CHUTE:
+                a0, phi0 = m, r[0]
+            else:
+                a1 = m
+        return a0, phi0
+
+    # -- présentation --------------------------------------------------------
+    def depuis_mediane(self, a):
+        return (a - self.a_mid) / DEG
+
+    def tableau(self):
+        """Lignes (grandeur, alternance d'entrée, alternance de sortie).
+        Chaque alternance est désignée par la palette qui y travaille ; la
+        chute, le repos et le chemin perdu sont mesurés sur l'autre palette,
+        celle qui reçoit la dent."""
+        par = {a.palette: a for a in self.alternances}
+        T = self.T
+        lignes = [("Course de l'ancre entre butées (°)", f"{(T.a_max - T.a_min) / DEG:.3f}", ""),
+                  ("Chute du dessin (°)", f"{self.chute_dessinee / DEG:.3f}", "")]
+
+        def l(nom, f):
+            lignes.append((nom, f(par["entrée"]), f(par["sortie"])))
+        d = self.depuis_mediane
+        l("Fin du dégagement, ancre (°)", lambda a: f"{d(a.evenements['fin_degagement']):+.3f}")
+        l("Impulsion sur la dent dès, ancre (°)",
+          lambda a: f"{d(a.evenements['debut_impulsion_dent']):+.3f}"
+          if "debut_impulsion_dent" in a.evenements else "—")
+        l("Échappement de la dent, ancre (°)", lambda a: f"{d(a.evenements['chute']):+.3f}")
+        l("Recul de la roue (°)", lambda a: f"{a.mesures['recul_deg']:.3f}")
+        l("Chute (°)", lambda a: f"{a.mesures['chute_deg']:.3f}")
+        l("Chute à la tête (µm)",
+          lambda a: f"{1000 * a.mesures['chute_deg'] * DEG * T.trace.rayon_tete:.1f}")
+        l("Repos à la chute (µm)", lambda a: f"{a.mesures['repos_chute_um']:.1f}")
+        l("Chemin perdu (µm)", lambda a: f"{a.mesures['chemin_perdu_um']:.1f}")
+        l("Repos sur butée (µm)", lambda a: f"{a.mesures['repos_butee_um']:.1f}")
+        l("Entrée de l'ellipse / ligne des centres (°)",
+          lambda a: f"{a.mesures['entree_ellipse_deg']:+.2f}")
+        l("Fin du dégagement, balancier (°)",
+          lambda a: f"{a.mesures['fin_degagement_balancier_deg']:+.2f}")
+        l("Fin de l'impulsion, balancier (°)",
+          lambda a: f"{a.mesures['fin_impulsion_balancier_deg']:+.2f}")
+        l("Levée du balancier (°)", lambda a: f"{a.mesures['levee_deg']:.2f}")
+        return lignes
 
 
-def imprimer(r, trace):
-    print(f"Roue : {trace.nombre_dents} dents, rayon de tête {trace.rayon_tete:.4f} mm, "
-          f"pas à la tête {1000 * trace.pas * trace.rayon_tete:.0f} µm")
-    print(f"Ancre : course entre butées {r['course_ancre_deg']:.3f}°, dessinée à "
-          f"{r['ancre_dessinee_deg']:+.3f}° de la médiane ; balancier dessiné à "
-          f"{r['balancier_dessine_deg']:+.2f}° de la ligne des centres")
-    print(f"Pose dessinée : chute de {r['chute_dessinee_deg']:.3f}° de roue avant contact "
-          f"sur « {r['chute_dessinee_contact']} »")
-    for alt in r["alternances"]:
-        a, b = alt.ancre, alt.balancier
-        print(f"\nAlternance « {alt.palette} » (ancre de {a['depart']:+.2f}° à {a['arrivee']:+.2f}°)")
-        print(f"  ancre  : fin du dégagement {a['fin_degagement']:+.3f}°, ellipse reprise "
-              f"{a['reprise_ellipse']:+.3f}°, impulsion sur la dent dès "
-              + (f"{a['debut_impulsion_dent']:+.3f}°" if a['debut_impulsion_dent'] is not None else "—")
-              + f", chute à {a['chute']:+.3f}°")
-        print(f"  roue   : recul au dégagement {alt.recul_deg:.3f}°, chute {alt.chute_deg:.3f}° "
-              f"({1000 * alt.chute_deg * DEG * trace.rayon_tete:.1f} µm à la tête)")
-        print(f"  palette {alt.palette_suivante} reçoit la dent : repos à la chute "
-              f"{alt.repos_chute_um:.1f} µm, chemin perdu {alt.chemin_perdu_um:.1f} µm, "
-              f"repos sur butée {alt.repos_butee_um:.1f} µm")
-        print(f"  balancier (depuis la ligne des centres, <0 avant) : entrée de l'ellipse "
-              f"{b['entree_ellipse']:+.2f}°, fin du dégagement {b['fin_degagement']:+.2f}°, "
-              f"fin d'impulsion {b['fin_impulsion']:+.2f}° ; levée {b['levee_totale']:.2f}°")
+def releve(trace_ou_tables):
+    T = trace_ou_tables if isinstance(trace_ou_tables, Tables) else Tables(trace_ou_tables)
+    return Releve(T)
+
+
+def imprimer(r):
+    print("Colonnes : alternance où travaille la palette d'entrée / de sortie ; chute, repos"
+          " et chemin perdu sur la palette qui reçoit la dent.")
+    print(f"{'':46s} {'entrée':>10s} {'sortie':>10s}")
+    for nom, e, s in r.tableau():
+        print(f"{nom:46s} {e:>10s} {s:>10s}")
 
 
 if __name__ == "__main__":
     import sys
+    import time
     from pathlib import Path
     from .dxf_import import lire_trace
     chemin = sys.argv[1] if len(sys.argv) > 1 else str(Path(__file__).with_name("simulation.dxf"))
-    t = lire_trace(chemin)
-    imprimer(releve(t), t)
+    t0 = time.time()
+    r = releve(lire_trace(chemin))
+    imprimer(r)
+    print(f"({time.time() - t0:.1f} s)")
