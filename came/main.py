@@ -4,7 +4,9 @@
 Le Python du systeme fait tourner le programme en Python pur. Pour le noyau
 compile (numba) et l'interface, utiliser l'environnement du projet :
 
-    /home/florian/DEV/virtual_env/.came/bin/python main.py
+    /home/florian/DEV/virtual_env/.watchtools/bin/python main.py
+
+depuis ce dossier, ou `python -m came.main` depuis la racine WatchTools.
 
 Usage :
     python3 main.py                 # interface graphique
@@ -14,9 +16,15 @@ Usage :
 
 import argparse
 import math
+import os
 import sys
 
-60
+if __package__ in (None, ""):
+    # lancé comme script (python main.py depuis ce dossier, bouton « Run » de
+    # VSCode) : le répertoire parent, racine de WatchTools, porte `commun` et
+    # ce paquet lui-même
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 def cli_chrono(args):
     """Synthese du coeur de chronographe, et evaluation d'un marteau a 2 pans."""
     from came.chrono import ChronoParams, synthesize_chrono

@@ -1,0 +1,60 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Came",
+            "module": "came.main",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Came : module courant (python -m came.<fichier>)",
+            "module": "came.${fileBasenameNoExtension}",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Came : vérifier l'installation",
+            "program": "${workspaceFolder}/verifier.py",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Came : synthèse en console",
+            "module": "came.main",
+            "args": [
+                "--chrono"
+            ],
+            "type": "debugpy",
+            "request": "launch",
+            "python": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/.."
+            },
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}

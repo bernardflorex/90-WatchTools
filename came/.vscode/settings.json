@@ -1,0 +1,12 @@
+{
+    "python.defaultInterpreterPath": "/home/florian/DEV/virtual_env/.watchtools/bin/python",
+    "python.analysis.extraPaths": [
+        ".."
+    ],
+    "terminal.integrated.env.linux": {
+        "PYTHONPATH": "${workspaceFolder}/.."
+    },
+    "files.exclude": {
+        "**/__pycache__": true
+    }
+}

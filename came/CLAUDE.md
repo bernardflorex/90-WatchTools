@@ -36,14 +36,27 @@ avec une IHM commune. Un programme d'engrenages est prevu.
 
 Depuis la fusion dans WatchTools, ce dossier est le paquet `came` (l'ancien
 sous-dossier `came/came/` a ete remonte d'un niveau) et l'environnement est
-**`/home/florian/DEV/virtual_env/.watchtools`**. Tout se lance depuis la racine
-de WatchTools ; les lanceurs `came.sh` / `came.bat` n'ont pas ete repris.
+**`/home/florian/DEV/virtual_env/.watchtools`**. Les lanceurs `came.sh` /
+`came.bat` n'ont pas ete repris.
+
+Depuis la racine de WatchTools :
 
     python main.py                   l'accueil : une icone par outil, chacun dans son processus
     python main.py came              cet outil, sans passer par l'accueil
     python -m came.main              cet outil seul
     python -m came.main --chrono     calcul en console
     python came/verifier.py          versions + calcul d'essai, ne lance rien
+
+Depuis CE dossier (l'utilisateur ouvre un VSCode et une session Claude par
+outil pour travailler sur plusieurs en parallele ; regles communes dans le
+`CLAUDE.md` de la racine) :
+
+    python main.py [--chrono]        main.py met lui-meme la racine dans sys.path
+    python verifier.py
+    python -m came.<module>          dans le terminal VSCode (PYTHONPATH=.. via .vscode/settings.json)
+
+`.vscode/launch.json` : « Came », « module courant », « verifier
+l'installation », « synthese en console ».
 
 Le theme (couleurs, feuille de style) et les widgets de panneau
 (`OngletsCompacts`, `Etiquette`, `soft`, `aide`) sont dans `commun/`, partages
